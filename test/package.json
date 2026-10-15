@@ -1,0 +1,7 @@
+{
+  "name": "familyledger-tests",
+  "private": true,
+  "type": "module",
+  "scripts": { "unit": "node unit.mjs" },
+  "devDependencies": { "xlsx": "0.18.5" }
+}

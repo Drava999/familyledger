@@ -1,0 +1,25 @@
+name = "familyledger"
+main = "dist/worker.js"
+compatibility_date = "2026-06-01"
+workers_dev = true
+
+[build]
+command = "node build.mjs"
+
+# Free Cloudflare AI: merchant identification, PDF reading, analysis (10,000 neurons/day free)
+[ai]
+binding = "AI"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "family-ledger"
+database_id = "10138ce1-ea13-4a65-b87e-00f8ec3972ed"
+
+[vars]
+# From the "Enable Cloudflare Access" pop-up (Settings > Domains & Routes). Until both are set, the API refuses every request.
+TEAM_DOMAIN = ""   # e.g. "https://yourteam.cloudflareaccess.com"
+POLICY_AUD = ""    # the AUD tag
+# Optional extra lock: only these emails may use the site, even if Access lets others in.
+ALLOWED_EMAILS = ""
+# Optional: a different Workers AI chat model
+AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"

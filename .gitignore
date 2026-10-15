@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.wrangler/
+test/*.png
+test/server.log
+*.csv
+*.pdf
+.dev.vars
