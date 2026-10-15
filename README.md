@@ -10,11 +10,11 @@ Runs entirely on Cloudflare:
 
 ## Deploy
 
-1. `npx wrangler deploy` (runs `node build.mjs` first, which bundles `web/` into `dist/worker.js`).
-   Pushing to `main` does the same if the repo is connected to the worker in Workers Builds.
-2. Cloudflare dashboard → Workers & Pages → `familyledger` → Settings → Domains & Routes → **Enable Cloudflare Access** on the workers.dev URL.
-   Copy the **AUD tag** and **team domain** from the pop-up into `wrangler.toml` (`POLICY_AUD`, `TEAM_DOMAIN`), and add family emails under **Manage Cloudflare Access**.
-3. Deploy again. Until step 2 is done, the API refuses all requests.
+1. Push to `main`. The repo is connected to the worker with Workers Builds, which runs `node build.mjs` and deploys. (Or run `npx wrangler deploy`.)
+2. Turn on login: Cloudflare dashboard → Workers & Pages → `familyledger` → **Access** tab → **Protect this Worker behind Access** → **All traffic**. For who can sign in, add each family member's email address (don't use "email domain" with gmail.com, that would let any Gmail user in). Select **Apply Access**.
+3. Optional safety net: put the same emails in `ALLOWED_EMAILS` in `wrangler.toml`.
+
+Until step 2 is done, the site loads but the API refuses every request.
 
 ## How merchants get sorted
 

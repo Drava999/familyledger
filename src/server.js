@@ -14,8 +14,8 @@ export default {
         // The page itself is also behind Access, but serving it is harmless: all data comes from /api.
         return new Response(INDEX_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache", ...SEC_HEADERS } });
       }
-      const email = await authEmail(req, env);
-      if (!email) return json({ error: "Sign in through Cloudflare Access to use Family Ledger." }, 401);
+      const email = await authEmail(req, env, ctx);
+      if (!email) return json({ error: "Login isn't switched on yet. In Cloudflare, open this Worker's Access tab and protect it, then reload." }, 401);
       if (env.ALLOWED_EMAILS) {
         const allow = env.ALLOWED_EMAILS.toLowerCase().split(/[\s,]+/).filter(Boolean);
         if (!allow.includes(email)) return json({ error: `${email} isn't on this family's list. Ask the owner to add you.` }, 403);
@@ -55,11 +55,17 @@ async function accessKeys(team) {
   certCache = { at: Date.now(), keys, team };
   return keys;
 }
-async function authEmail(req, env) {
+async function authEmail(req, env, ctx) {
   if (env.DEV_EMAIL) return env.DEV_EMAIL.toLowerCase(); // local testing only, never set in production
+  // Worker-level Access (Worker > Access tab): Cloudflare has already checked the login and hands us the identity.
+  if (ctx && ctx.access) {
+    const id = await ctx.access.getIdentity().catch(() => null);
+    return id && id.email ? String(id.email).toLowerCase() : null;
+  }
+  // Fallback: hostname-based Access (e.g. a custom domain) — verify the JWT ourselves.
   const team = String(env.TEAM_DOMAIN || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
   const audTag = env.POLICY_AUD || env.ACCESS_AUD;
-  if (!team || !audTag) throw fail(500, "Cloudflare Access isn't set up yet: set TEAM_DOMAIN and POLICY_AUD.");
+  if (!team || !audTag) return null;
   const token = req.headers.get("cf-access-jwt-assertion");
   if (!token) return null;
   const [h, p, s] = token.split(".");

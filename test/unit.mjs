@@ -26,7 +26,11 @@ ok(await call(await token({ aud: [AUD], email: "a@b.c", exp: now - 10 })) === 40
 const other = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
 ok(await call(await token({ aud: [AUD], email: "a@b.c", exp: now + 600 }, other.privateKey)) === 401, "forged signature rejected");
 ok(await call(await token({ aud: [AUD], email: "x@y.z", exp: now + 600 }), { ...env, ALLOWED_EMAILS: "bryan@example.com, mum@example.com" }) === 403, "email not on allow-list rejected");
-ok(await call(null, { DB }) === 500, "refuses to run when Access isn't configured");
+ok(await call(null, { DB }) === 401, "refuses everything when Access isn't switched on");
+const viaCtx = await worker.fetch(new Request("https://x/api/me"), { DB }, { access: { aud: "a", getIdentity: async () => ({ email: "Mum@Example.com" }) } });
+ok(viaCtx.status === 200 && (await viaCtx.json()).email === "mum@example.com", "Worker-level Access identity (ctx.access) accepted");
+const ctxAllow = await worker.fetch(new Request("https://x/api/me"), { DB, ALLOWED_EMAILS: "bryan@example.com" }, { access: { aud: "a", getIdentity: async () => ({ email: "stranger@gmail.com" }) } });
+ok(ctxAllow.status === 403, "allow-list still applies with ctx.access");
 
 // --- lookup auto-filing ---
 const dev = { DB, AI, DEV_EMAIL: "bryan@example.com" };
