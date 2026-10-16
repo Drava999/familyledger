@@ -9,3 +9,5 @@ CREATE INDEX IF NOT EXISTS files_shared ON files(shared);
 CREATE TABLE IF NOT EXISTS rules (merchant TEXT PRIMARY KEY, category TEXT NOT NULL, source TEXT, note TEXT, by TEXT, updated INTEGER);
 CREATE TABLE IF NOT EXISTS budgets (owner TEXT NOT NULL, scope TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (owner, scope));
 CREATE TABLE IF NOT EXISTS lookups (merchant TEXT PRIMARY KEY, what TEXT, category TEXT, confidence TEXT, updated INTEGER);
+CREATE TABLE IF NOT EXISTS members (email TEXT PRIMARY KEY, added INTEGER);
+CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT);

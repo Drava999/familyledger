@@ -14,18 +14,23 @@ export default {
         // The page itself is also behind Access, but serving it is harmless: all data comes from /api.
         return new Response(INDEX_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache", ...SEC_HEADERS } });
       }
-      const email = await authEmail(req, env, ctx);
-      if (!email) return json({ error: "Login isn't switched on yet. In Cloudflare, open this Worker's Access tab and protect it, then reload." }, 401);
-      if (env.ALLOWED_EMAILS) {
-        const allow = env.ALLOWED_EMAILS.toLowerCase().split(/[\s,]+/).filter(Boolean);
-        if (!allow.includes(email)) return json({ error: `${email} isn't on this family's list. Ask the owner to add you.` }, 403);
-      }
       if (["POST", "PUT", "DELETE"].includes(req.method)) {
         // CSRF guard: only accept JSON from our own page
         const origin = req.headers.get("origin");
         if (origin && origin !== url.origin) return json({ error: "Wrong origin" }, 403);
         if (req.method !== "DELETE" && !(req.headers.get("content-type") || "").includes("application/json")) return json({ error: "Expected JSON" }, 415);
       }
+      if (env.DB) await ensureSchema(env.DB);
+      // Sign-in endpoints (no session needed)
+      if (url.pathname === "/api/login-config" && req.method === "GET") return json({ clientId: await googleClientId(env) });
+      if (url.pathname === "/api/login" && req.method === "POST") return await googleLogin(req, env, url);
+      if (url.pathname === "/api/logout" && req.method === "POST") return json({ ok: true }, 200, { "set-cookie": clearCookie() });
+
+      const who = await authEmail(req, env, ctx);
+      if (!who) return json({ error: "Please sign in.", login: true }, 401);
+      const email = who.email;
+      const allow = await allowedEmails(env);
+      if (allow.size ? !allow.has(email) : who.via === "google") return json({ error: `${email} isn't on this family's list. Ask the owner to add you.`, login: true }, 403);
       return await route(req, env, url, email);
     } catch (e) {
       const status = e.status || 500;
@@ -36,7 +41,7 @@ export default {
 };
 
 const SEC_HEADERS = { "x-content-type-options": "nosniff", "referrer-policy": "same-origin", "x-frame-options": "DENY" };
-function json(obj, status = 200) { return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", "cache-control": "no-store", ...SEC_HEADERS } }); }
+function json(obj, status = 200, extra = {}) { return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", "cache-control": "no-store", ...SEC_HEADERS, ...extra } }); }
 function fail(status, msg) { const e = new Error(msg); e.status = status; e.publicMessage = msg; return e; }
 async function body(req, limit = 4_000_000) {
   const text = await req.text();
@@ -56,12 +61,19 @@ async function accessKeys(team) {
   return keys;
 }
 async function authEmail(req, env, ctx) {
-  if (env.DEV_EMAIL) return env.DEV_EMAIL.toLowerCase(); // local testing only, never set in production
-  // Worker-level Access (Worker > Access tab): Cloudflare has already checked the login and hands us the identity.
+  if (env.DEV_EMAIL) return { email: env.DEV_EMAIL.toLowerCase(), via: "dev" }; // local testing only, never set in production
+  // 1. Our own Google sign-in session cookie
+  const s = await readSession(req, env);
+  if (s) return { email: s, via: "google" };
+  // 2. Worker-level Cloudflare Access (optional): Cloudflare has already checked the login and hands us the identity.
   if (ctx && ctx.access) {
     const id = await ctx.access.getIdentity().catch(() => null);
-    return id && id.email ? String(id.email).toLowerCase() : null;
+    return id && id.email ? { email: String(id.email).toLowerCase(), via: "access" } : null;
   }
+  const e = await accessJwtEmail(req, env);
+  return e ? { email: e, via: "access" } : null;
+}
+async function accessJwtEmail(req, env) {
   // Fallback: hostname-based Access (e.g. a custom domain) — verify the JWT ourselves.
   const team = String(env.TEAM_DOMAIN || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
   const audTag = env.POLICY_AUD || env.ACCESS_AUD;
@@ -85,6 +97,93 @@ async function authEmail(req, env, ctx) {
   if (payload.exp && payload.exp < now) return null;
   if (payload.iss && payload.iss !== `https://${team}`) return null;
   return payload.email ? String(payload.email).toLowerCase() : null;
+}
+
+/* ---------------- Google sign-in ---------------- */
+// Family list + settings live in D1 (not in this public repo).
+let schemaReady = false;
+async function ensureSchema(db) {
+  if (schemaReady) return;
+  await db.batch([
+    db.prepare("CREATE TABLE IF NOT EXISTS members (email TEXT PRIMARY KEY, added INTEGER)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT)"),
+  ]);
+  schemaReady = true;
+}
+async function setting(env, k) { const r = await env.DB.prepare("SELECT v FROM settings WHERE k=?").bind(k).first(); return r ? r.v : ""; }
+async function googleClientId(env) { return String(env.GOOGLE_CLIENT_ID || (env.DB ? await setting(env, "google_client_id") : "") || "").trim(); }
+async function allowedEmails(env) {
+  const set = new Set(String(env.ALLOWED_EMAILS || "").toLowerCase().split(/[\s,]+/).filter(Boolean));
+  if (env.DB) { const { results } = await env.DB.prepare("SELECT email FROM members").all(); for (const r of results || []) set.add(String(r.email).toLowerCase()); }
+  return set;
+}
+
+let googleCerts = { at: 0, keys: null };
+async function googleKeys() {
+  if (googleCerts.keys && Date.now() - googleCerts.at < 3600_000) return googleCerts.keys;
+  const r = await fetch("https://www.googleapis.com/oauth2/v3/certs");
+  if (!r.ok) throw fail(502, "Couldn't reach Google to check the sign-in. Try again.");
+  const { keys } = await r.json();
+  googleCerts = { at: Date.now(), keys };
+  return keys;
+}
+async function verifyGoogleToken(token, clientId) {
+  const [h, p, s] = String(token || "").split(".");
+  if (!h || !p || !s) return null;
+  let header, payload;
+  try { header = JSON.parse(new TextDecoder().decode(b64urlToBytes(h))); payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(p))); } catch { return null; }
+  if (header.alg !== "RS256") return null;
+  const jwk = (await googleKeys()).find(k => k.kid === header.kid);
+  if (!jwk) return null;
+  const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+  if (!(await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, b64urlToBytes(s), new TextEncoder().encode(`${h}.${p}`)))) return null;
+  const now = Date.now() / 1000;
+  if (payload.aud !== clientId) return null;
+  if (!["accounts.google.com", "https://accounts.google.com"].includes(payload.iss)) return null;
+  if (!payload.exp || payload.exp < now) return null;
+  if (payload.email_verified !== true && payload.email_verified !== "true") return null;
+  return payload.email ? String(payload.email).toLowerCase() : null;
+}
+async function googleLogin(req, env, url) {
+  if (!env.DB) throw fail(500, "The D1 database isn't bound.");
+  const clientId = await googleClientId(env);
+  if (!clientId) return json({ error: "Google sign-in isn't set up yet (no client ID)." }, 503);
+  const b = await body(req, 10_000);
+  const email = await verifyGoogleToken(b.credential, clientId);
+  if (!email) return json({ error: "Google sign-in couldn't be verified. Try again." }, 401);
+  const allow = await allowedEmails(env);
+  if (!allow.has(email)) return json({ error: `${email} isn't on this family's list. Ask the owner to add you.` }, 403);
+  return json({ ok: true, email }, 200, { "set-cookie": await sessionCookie(env, email, url) });
+}
+
+// Session cookie: base64url({e,exp}) + "." + HMAC-SHA256, key generated once and kept in D1.
+const SESSION_DAYS = 30;
+async function sessionKey(env) {
+  let k = await setting(env, "session_key");
+  if (!k) {
+    const raw = crypto.getRandomValues(new Uint8Array(32));
+    await env.DB.prepare("INSERT INTO settings(k,v) VALUES('session_key',?) ON CONFLICT(k) DO NOTHING").bind(bytesToB64url(raw)).run();
+    k = await setting(env, "session_key");
+  }
+  return crypto.subtle.importKey("raw", b64urlToBytes(k), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+}
+function bytesToB64url(u) { let s = ""; for (const b of u) s += String.fromCharCode(b); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+async function sessionCookie(env, email, url) {
+  const p = bytesToB64url(new TextEncoder().encode(JSON.stringify({ e: email, exp: Math.floor(Date.now() / 1000) + SESSION_DAYS * 86400 })));
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", await sessionKey(env), new TextEncoder().encode(p)));
+  const secure = url.protocol === "https:" ? "; Secure" : "";
+  return `fl_session=${p}.${bytesToB64url(sig)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86400}${secure}`;
+}
+function clearCookie() { return "fl_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure"; }
+async function readSession(req, env) {
+  if (!env.DB) return null;
+  const m = (req.headers.get("cookie") || "").match(/(?:^|;\s*)fl_session=([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  const ok = await crypto.subtle.verify("HMAC", await sessionKey(env), b64urlToBytes(m[2]), new TextEncoder().encode(m[1])).catch(() => false);
+  if (!ok) return null;
+  let d; try { d = JSON.parse(new TextDecoder().decode(b64urlToBytes(m[1]))); } catch { return null; }
+  if (!d.e || !d.exp || d.exp < Date.now() / 1000) return null;
+  return String(d.e).toLowerCase();
 }
 
 /* ---------------- routes ---------------- */

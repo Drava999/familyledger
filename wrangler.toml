@@ -16,12 +16,15 @@ database_name = "family-ledger"
 database_id = "10138ce1-ea13-4a65-b87e-00f8ec3972ed"
 
 [vars]
-# Login: in Cloudflare open Workers & Pages > familyledger > Access tab > "Protect this Worker behind Access" (All traffic).
-# The worker reads the signed-in email from Cloudflare directly; nothing to paste here.
-# Only for a custom domain protected by hostname-based Access: team domain + AUD tag.
+# Login is "Sign in with Google", built into the app.
+# The Google OAuth client ID and the family email list are kept in the D1 database
+# (tables `settings` and `members`), so they never appear in this public repo.
+# You can also set the client ID here instead (it isn't secret):
+GOOGLE_CLIENT_ID = ""
+# Optional extra emails allowed in, in addition to the `members` table.
+ALLOWED_EMAILS = ""
+# Optional, only if you also put Cloudflare Access with a custom domain in front: team domain + AUD tag.
 TEAM_DOMAIN = ""
 POLICY_AUD = ""
-# Optional extra lock: only these emails may use the site, even if Access lets others in.
-ALLOWED_EMAILS = ""
 # Optional: a different Workers AI chat model
 AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"

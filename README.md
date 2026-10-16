@@ -6,12 +6,14 @@ Runs entirely on Cloudflare:
 - **Worker** `familyledger` serves the page and a small JSON API (`src/server.js`).
 - **D1** database `family-ledger` stores statements, household merchant rules, budgets and AI lookups (`schema.sql`, already applied).
 - **Workers AI** (free tier) identifies unknown merchants, reads PDFs and writes the analysis. No paid API keys.
-- **Cloudflare Access** handles login by email code. Free for up to 50 people.
+- **Sign in with Google**, built in. Only emails on the family list (D1 table `members`) can get in.
 
 ## Deploy
 
 1. Push to `main`. The repo is connected to the worker with Workers Builds, which runs `node build.mjs` and deploys. (Or run `npx wrangler deploy`.)
-2. Turn on login: Cloudflare dashboard → Workers & Pages → `familyledger` → **Access** tab → **Protect this Worker behind Access** → **All traffic**. For who can sign in, add each family member's email address (don't use "email domain" with gmail.com, that would let any Gmail user in). Select **Apply Access**.
+2. Turn on login: in Google Cloud Console → APIs & Services → Credentials, create an **OAuth client ID** (type: Web application) and add your site address (https://familyledger.<subdomain>.workers.dev) under **Authorized JavaScript origins**. Then store it and the family list in D1:
+   `INSERT INTO settings(k,v) VALUES('google_client_id','<client id>');`
+   `INSERT INTO members(email,added) VALUES('you@gmail.com',0);` (one row per family member)
 3. Optional safety net: put the same emails in `ALLOWED_EMAILS` in `wrangler.toml`.
 
 Until step 2 is done, the site loads but the API refuses every request.
@@ -25,7 +27,7 @@ Until step 2 is done, the site loads but the API refuses every request.
 
 ## Files
 
-- `src/server.js`: API, Access login check, Workers AI calls
+- `src/server.js`: API, Google sign-in + sessions, Workers AI calls
 - `web/head.html`, `web/body.html`: page markup and styles
 - `web/parse.js`: statement parsing, merchant names, categories (shared logic)
 - `web/app.js`: the page's behaviour

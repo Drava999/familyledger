@@ -53,3 +53,43 @@ ok(/Workers AI isn't turned on/.test(noai.error || ""), "clear message when the 
 const big = await worker.fetch(new Request("http://localhost/api/files", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "x", tx: [["2026-01-01", "<script>", 1, "Hacker"], ["bad"], ["2026-01-02", "ok", "NaN"]] }) }), dev, {});
 const fid = (await big.json()).id; const stored = JSON.parse(sqlite.prepare("SELECT tx FROM files WHERE id=?").get(fid).tx);
 ok(stored.length === 1 && stored[0][3] === "Other", "server drops malformed rows and unknown categories");
+
+// --- Google sign-in (runs last: it fills the family list) ---
+{
+  const gkp = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  const gjwk = { ...(await crypto.subtle.exportKey("jwk", gkp.publicKey)), kid: "g1", alg: "RS256" };
+  const pf = globalThis.fetch;
+  globalThis.fetch = async (u, o) => String(u) === "https://www.googleapis.com/oauth2/v3/certs" ? new Response(JSON.stringify({ keys: [gjwk] })) : pf(u, o);
+  const CID = "123-abc.apps.googleusercontent.com";
+  const gtok = (claims, key = gkp.privateKey) => token({ iss: "https://accounts.google.com", aud: CID, email_verified: true, exp: now + 600, ...claims }, key, "g1");
+  const E = { DB };
+  const req = (path, opts = {}) => worker.fetch(new Request("https://fam.workers.dev" + path, opts), E, {});
+  const login = (cred, origin = "https://fam.workers.dev") => req("/api/login", { method: "POST", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ credential: cred }) });
+
+  ok((await login(await gtok({ email: "bryan@gmail.com" }))).status === 503, "login refused until a client ID is set");
+  sqlite.prepare("INSERT INTO settings(k,v) VALUES('google_client_id',?)").run(CID);
+  ok((await (await req("/api/login-config")).json()).clientId === CID, "page gets the client ID");
+  ok((await login(await gtok({ email: "bryan@gmail.com" }))).status === 403, "nobody gets in while the family list is empty");
+  sqlite.prepare("INSERT INTO members(email,added) VALUES('bryan@gmail.com',0)").run();
+  const good = await login(await gtok({ email: "Bryan@Gmail.com" }));
+  const cookie = (good.headers.get("set-cookie") || "").split(";")[0];
+  ok(good.status === 200 && /HttpOnly/.test(good.headers.get("set-cookie")) && /Secure/.test(good.headers.get("set-cookie")), "family member signs in, gets a secure cookie");
+  const me = await req("/api/me", { headers: { cookie } });
+  ok(me.status === 200 && (await me.json()).email === "bryan@gmail.com", "cookie works for the API");
+  ok((await req("/api/me")).status === 401, "no cookie, no data");
+  ok((await req("/api/me", { headers: { cookie: cookie.slice(0, -3) + "AAA" } })).status === 401, "tampered cookie rejected");
+  const forged = "fl_session=" + Buffer.from(JSON.stringify({ e: "bryan@gmail.com", exp: now + 999 })).toString("base64url") + ".AAAA";
+  ok((await req("/api/me", { headers: { cookie: forged } })).status === 401, "forged cookie rejected");
+  ok((await login(await gtok({ email: "stranger@gmail.com" }))).status === 403, "Google account not in family rejected");
+  ok((await login(await gtok({ email: "bryan@gmail.com", aud: "someone-elses-app" }))).status === 401, "token for another app rejected");
+  ok((await login(await gtok({ email: "bryan@gmail.com", email_verified: false }))).status === 401, "unverified email rejected");
+  ok((await login(await gtok({ email: "bryan@gmail.com", exp: now - 5 }))).status === 401, "expired Google token rejected");
+  ok((await login(await gtok({ email: "bryan@gmail.com", iss: "https://evil.example" }))).status === 401, "wrong issuer rejected");
+  ok((await login(await gtok({ email: "bryan@gmail.com" }, other.privateKey))).status === 401, "forged Google signature rejected");
+  ok((await login(await gtok({ email: "bryan@gmail.com" }), "https://evil.example")).status === 403, "login from another site rejected");
+  const strangerAccess = await worker.fetch(new Request("https://x/api/me"), { DB }, { access: { aud: "a", getIdentity: async () => ({ email: "stranger@gmail.com" }) } });
+  ok(strangerAccess.status === 403, "family list also applies to Cloudflare Access sign-ins");
+  const out = await req("/api/logout", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  ok(/Max-Age=0/.test(out.headers.get("set-cookie") || ""), "sign out clears the cookie");
+  globalThis.fetch = pf;
+}

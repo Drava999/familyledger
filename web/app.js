@@ -214,7 +214,7 @@ async function api(method, path, body){
   try{ r=await fetch(path,{method, headers:body?{"content-type":"application/json"}:{}, body:body?JSON.stringify(body):undefined, credentials:"same-origin"}); }
   catch(e){ throw new Error("You seem to be offline. Check your connection."); }
   let j=null; try{ j=await r.json(); }catch(e){}
-  if(!r.ok){ const err=new Error((j&&j.error)||("Server error "+r.status)); err.status=r.status; throw err; }
+  if(!r.ok){ const err=new Error((j&&j.error)||("Server error "+r.status)); err.status=r.status; err.login=!!(j&&j.login); throw err; }
   return j;
 }
 function setSave(t){ $("saveState").textContent=t; }
@@ -597,7 +597,8 @@ function renderFiles(){
   const fn=$("famNote"); fn.hidden=false;
   const nShared=real.filter(f=>f.shared).length;
   fn.innerHTML=`<b>Family sharing</b><span>Statements are private to you until you tap <b>Private</b> to share one. Shared statements show up for everyone you've let into this site, and theirs show up for you. Merchant categories are shared by the whole household, so anything one person sorts helps everyone.</span><span class="muted">${nShared} of yours shared · ${S.family.length} from family.</span>`;
-  $("privacyNote").textContent=`Signed in as ${S.me.email||""}. Statements are stored in your family's own Cloudflare database.`;
+  $("privacyNote").innerHTML=`Signed in as ${esc(S.me.email||"")} · <button class="btn ghost sm" id="signOutBtn" type="button">Sign out</button><br>Statements are stored in your family's own Cloudflare database.`;
+  $("signOutBtn").onclick=signOut;
   $("exportBtn").hidden=!real.length&&!S.famView.length;
   let rs=$("resortBtn"); if(!rs&&real.length){ rs=document.createElement("button"); rs.className="btn ghost sm"; rs.id="resortBtn"; $("exportBtn").parentNode.appendChild(rs); }
   if(rs){ rs.hidden=!real.length; if(!rs.dataset.armed) rs.textContent="Re-run auto-sort"; rs.onclick=()=>{ if(rs.dataset.armed){ delete rs.dataset.armed; resortAll(); } else { rs.dataset.armed=1; rs.textContent="Tap again: keeps merchant rules, resets one-off changes"; setTimeout(()=>{ if(rs.isConnected&&rs.dataset.armed){ delete rs.dataset.armed; rs.textContent="Re-run auto-sort"; } },4000); } }; }
@@ -647,7 +648,31 @@ async function boot(){
     if(S.ai&&triageGroups(false).some(g=>!S.lookups[g.k])) autoLookup();
   }catch(e){
     setSave(e.status===401||e.status===403?"Not signed in":"Offline");
+    if(e.login){ showLogin(e.status===403?e.message:""); return; }
     $("alerts").innerHTML=`<div class="alert bad" role="alert"><b>${e.status===401||e.status===403?"You're not signed in":"Couldn't reach the server"}</b><span>${esc(e.message)}</span></div>`;
   }
 }
+
+/* ---------- Google sign-in ---------- */
+async function showLogin(msg){
+  const box=$("alerts");
+  box.innerHTML=`<div class="alert" role="region" aria-label="Sign in" style="flex-direction:column;align-items:flex-start;gap:10px">
+    <b>Sign in to Family Ledger</b>
+    <span class="muted">Use the Google account your family added.</span>
+    <div id="gBtn" style="min-height:44px"></div>
+    <span id="loginMsg" role="status" class="muted">${esc(msg||"")}</span></div>`;
+  let cfg; try{ cfg=await api("GET","/api/login-config"); }catch(e){ $("loginMsg").textContent="Couldn't reach the server."; return; }
+  if(!cfg.clientId){ $("loginMsg").textContent="Google sign-in isn't set up yet."; return; }
+  if(!window.google||!google.accounts){
+    await new Promise((ok,bad)=>{ const sc=document.createElement("script"); sc.src="https://accounts.google.com/gsi/client"; sc.async=true; sc.onload=ok; sc.onerror=bad; document.head.appendChild(sc); }).catch(()=>{});
+  }
+  if(!window.google||!google.accounts){ $("loginMsg").textContent="Couldn't load Google sign-in. Check your connection or ad blocker."; return; }
+  google.accounts.id.initialize({ client_id:cfg.clientId, ux_mode:"popup", callback:async(res)=>{
+    $("loginMsg").textContent="Signing in…";
+    try{ await api("POST","/api/login",{credential:res.credential}); box.innerHTML=""; boot(); }
+    catch(e){ $("loginMsg").textContent=e.message; }
+  }});
+  google.accounts.id.renderButton($("gBtn"),{theme:"outline",size:"large",shape:"pill",text:"signin_with"});
+}
+async function signOut(){ try{ await api("POST","/api/logout",{}); }catch(e){} if(window.google&&google.accounts) google.accounts.id.disableAutoSelect(); location.reload(); }
 boot();
