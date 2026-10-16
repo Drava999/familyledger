@@ -1,6 +1,6 @@
 /*PURE-START*/
-const CATS = ["Food & Dining","Groceries","Transport","Shopping","Bills & Utilities","Subscriptions","Health","Entertainment","Travel","Education","Insurance","Cash","Income","Transfers","Investing","Other"];
-const NON_SPEND = new Set(["Income","Transfers","Investing"]);
+const CATS = ["Food & Dining","Groceries","Transport","Shopping","Bills & Utilities","Subscriptions","Health","Entertainment","Travel","Education","Insurance","Cash","Income","Transfers","Investing","People","Other"];
+const NON_SPEND = new Set(["Income","Transfers","Investing","People"]);
 const SPEND_CATS = CATS.filter(c=>!NON_SPEND.has(c));
 const RULES = [
  [/salary|payroll|mindef|\bsaf\b|ns pay|allowance|interest earned|interest credit|dividend|cashback|refund|rebate|giro.*(cpf|iras) refund/i,"Income"],
@@ -101,7 +101,7 @@ function autoCategory(desc, amt, rules){
   }
   if(d.kind==="paynow"){
     if(BIZ.test(d.raw.replace(/^.*\b(?:to|from):/i,""))) return [amt>0?"Income":"Other", amt>0?1:0];
-    return ["Transfers",1];
+    return ["People",1];
   }
   return amt>0 ? ["Income",1] : ["Other",0];
 }
@@ -198,5 +198,48 @@ function groupPdfItems(pages){
     rows.sort((a,b)=>b.y-a.y).forEach(r=>{ r.items.sort((a,b)=>a.x-b.x); lines.push(r); });
   });
   return lines;
+}
+
+/* --- card purchase date: "... SI SGP 12OCT" posted on 14 Oct -> spent on 12 Oct --- */
+function purchaseDate(posted, desc){
+  const m=String(desc||"").toUpperCase().match(new RegExp("(?:^|[^0-9A-Z])(\\d{1,2})("+MONTHS3+")(?![A-Z])"));
+  if(!m||!posted) return posted;
+  const py=+posted.slice(0,4), pm=+posted.slice(5,7), mo=MON[m[2].toLowerCase()], d=+m[1];
+  const y = mo>pm ? py-1 : py; const c=iso(y,mo,d); if(!c) return posted;
+  const diff=(Date.parse(posted)-Date.parse(c))/864e5;
+  return diff>=0&&diff<=15 ? c : posted;
+}
+/* --- account number from the lines above a CSV's header row --- */
+function accountFromRows(rows, header){
+  const lim=Math.max(0,Math.min(header>=0?header:8, 15));
+  for(let i=0;i<lim;i++){ const line=(rows[i]||[]).join(" "); const m=line.match(/\b(\d{3}-\d{5,7}-\d|\d{3}-\d-\d{6}|\d{4}-\d{4}-\d{4}-\d{4}|\d{9,12})\b/); if(m) return m[1]; }
+  return "";
+}
+function shortAcct(a){ a=String(a||""); if(!a) return ""; const d=a.replace(/[^0-9-]/g,""); return /\d{3}-\d{5,7}-\d/.test(d)||d.length>6 ? "…"+d.slice(-5) : a; }
+/* --- overlap: keep only rows not already present, counting identical rows --- */
+function txKey(t){ return t[0]+"|"+t[1]+"|"+t[2]; }
+function dedupeCount(existing, incoming){
+  const have=new Map(); existing.forEach(t=>{ const k=txKey(t); have.set(k,(have.get(k)||0)+1); });
+  const fresh=[]; let dup=0;
+  incoming.forEach(t=>{ const k=txKey(t); const n=have.get(k)||0; if(n>0){ have.set(k,n-1); dup++; } else fresh.push(t); });
+  return {fresh, dup};
+}
+/* --- transfers between the family's own accounts: same amount, opposite sign, within 3 days, different accounts --- */
+function pairTransfers(items){
+  // items: [{id, date, amt, acct, cat}] -> Map(id -> partner id)
+  const pairs=new Map(); const ins=items.filter(t=>t.amt>0).sort((a,b)=>a.date.localeCompare(b.date));
+  const byAmt=new Map(); ins.forEach(t=>{ const k=t.amt.toFixed(2); (byAmt.get(k)||byAmt.set(k,[]).get(k)).push(t); });
+  items.filter(t=>t.amt<0).sort((a,b)=>a.date.localeCompare(b.date)).forEach(o=>{
+    const cands=byAmt.get((-o.amt).toFixed(2)); if(!cands) return;
+    const i=cands.findIndex(c=>!pairs.has(c.id)&&c.acct!==o.acct&&(c.cat==="Transfers"||o.cat==="Transfers")&&Math.abs(Date.parse(c.date)-Date.parse(o.date))<=3*864e5);
+    if(i>=0){ pairs.set(o.id,cands[i].id); pairs.set(cands[i].id,o.id); }
+  });
+  return pairs;
+}
+/* --- split bill share: "50%" or a fixed amount --- */
+function applyShare(amt, share){
+  if(!share||amt>=0) return amt;
+  const s=String(share); if(s.endsWith("%")) return Math.round(amt*parseFloat(s)/100*100)/100;
+  const v=parseFloat(s); return isFinite(v)&&v>0 ? -Math.min(v,-amt) : amt;
 }
 /*PURE-END*/

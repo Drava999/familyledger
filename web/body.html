@@ -1,101 +1,35 @@
-
-<div class="app">
-  <div class="top">
-    <div><span class="label">Household money</span><h1>Family Ledger</h1></div>
-    <span class="small muted" id="saveState"></span>
-  </div>
-
-  <div id="alerts" class="app" style="gap:8px"></div>
-
-  <div class="drop" id="drop">
-    <h2>Add bank statements</h2>
-    <p class="small muted">CSV, Excel or PDF statements from any bank or card (DBS, POSB, OCBC, UOB, Trust, cards…). Add as many files and people as you like.</p>
-    <label class="btn" for="fileIn">Choose files</label>
-    <input type="file" id="fileIn" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/pdf" multiple hidden>
-  </div>
-  <div id="reviews" class="app" style="gap:12px"></div>
-
-  <div class="banner" id="exampleBanner" hidden><b>Example data.</b> These are made-up transactions so you can see how it works. They disappear when you add your first statement.</div>
-
-  <div class="row" style="justify-content:space-between">
-    <div class="chips" id="personChips"></div>
-    <select id="rangeSel" aria-label="Period"></select>
-  </div>
-
-  <div class="tiles">
-    <div class="tile"><span class="label">Money in</span><span class="v in" id="tIn"></span><span class="s" id="tInS"></span></div>
-    <div class="tile"><span class="label">Spending</span><span class="v out" id="tOut"></span><span class="s" id="tOutS"></span></div>
-    <div class="tile"><span class="label">Saved / invested</span><span class="v" id="tSave"></span><span class="s" id="tSaveS"></span></div>
-    <div class="tile"><span class="label">Savings rate</span><span class="v" id="tRate"></span><span class="s" id="tRateS"></span></div>
-  </div>
-
-  <div class="panel" id="budgetPanel">
-    <div class="row" style="justify-content:space-between"><h2 id="budgetTitle">Monthly budgets</h2><button class="btn ghost sm" id="budgetEdit">Set budgets</button></div>
-    <div class="cats" id="budgets"></div>
-  </div>
-
-  <div class="panel" id="triagePanel">
-    <div class="row" style="justify-content:space-between"><h2>Needs a category</h2><button class="btn ghost sm" id="aiCatBtn">Identify with AI</button></div>
-    <div id="triage"></div>
-  </div>
-
-  <div class="panel">
-    <div class="row" style="justify-content:space-between"><h2>Month by month</h2><div class="legend"><span><i style="background:var(--in)"></i>In</span><span><i style="background:var(--out)"></i>Spending</span></div></div>
-    <div class="chartwrap" id="monthChart"></div>
-  </div>
-
-  <div class="two">
-    <div class="panel">
-      <div class="row" style="justify-content:space-between"><h2>Where it goes</h2><span class="small muted">Tap to filter</span></div>
-      <div class="cats" id="cats"></div>
-      <div class="legend" id="personLegend"></div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-spend" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></symbol>
+  <symbol id="i-moves" viewBox="0 0 24 24"><path d="M4 8h13l-3-3M20 16H7l3 3"/></symbol>
+  <symbol id="i-goals" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></symbol>
+  <symbol id="i-add" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 20h16"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+</svg>
+<div class="shell">
+  <aside class="side" aria-label="Sections">
+    <span class="brand">Family Ledger</span>
+    <button class="btn dark" id="addSide" type="button"><svg class="i"><use href="#i-add"/></svg>Add statements</button>
+    <nav id="sideNav"></nav>
+    <div class="foot"><span id="saveStateSide"></span><span id="whoSide"></span></div>
+  </aside>
+  <main class="main" id="main">
+    <div class="head">
+      <h1 id="title">Overview</h1>
+      <div class="tools">
+        <div class="who" id="who" role="group" aria-label="Whose money"></div>
+        <select id="monthSel" aria-label="Period"></select>
+        <button class="iconbtn add-m" id="addTop" type="button" aria-label="Add statements"><svg class="i"><use href="#i-add"/></svg></button>
+      </div>
     </div>
-    <div class="panel">
-      <h2>Top merchants</h2>
-      <div class="mlist" id="merchants"></div>
-      <h2 style="margin-top:6px">Recurring charges</h2>
-      <div class="mlist" id="recurring"></div>
-    </div>
-  </div>
-
-  <div class="panel">
-    <div class="row" style="justify-content:space-between"><h2>Trends</h2><span class="small muted" id="trendNote"></span></div>
-    <div class="chips" id="trendChips"></div>
-    <div class="chartwrap" id="trendChart"></div>
-    <div class="legend" id="trendLegend"></div>
-    <h3 style="font-size:15px;margin-top:4px" id="changesTitle">Biggest changes</h3>
-    <div class="changes" id="changes"></div>
-  </div>
-
-  <div class="panel" id="cmpPanel">
-    <div class="row" style="justify-content:space-between"><h2>Person by person</h2><span class="small muted" id="cmpNote"></span></div>
-    <div class="people" id="peopleCards"></div>
-    <h3 style="font-size:15px;margin-top:4px">Spending by category</h3>
-    <div class="cmp" id="cmpBars"></div>
-  </div>
-
-  <div class="panel">
-    <div class="row" style="justify-content:space-between"><h2>Analysis and recommendations</h2></div>
-    <input type="text" id="goals" placeholder="Goals or context, e.g. save $500/month, family trip in June">
-    <button class="btn" id="aiBtn">Analyse with AI</button>
-    <p class="small muted">Sends totals by category, month and person, your budgets and your top merchants. Individual transactions and file contents stay out of it.</p>
-    <div class="ai" id="aiOut" hidden></div>
-  </div>
-
-  <div class="panel">
-    <div class="row" style="justify-content:space-between"><h2>Transactions</h2><span class="small muted num" id="txCount"></span></div>
-    <div class="row"><input type="text" id="search" placeholder="Search description" style="flex:1"><button class="btn ghost sm" id="clearCat" hidden></button></div>
-    <div class="list" id="txList"></div>
-    <button class="btn ghost sm" id="moreTx" hidden>Show more</button>
-  </div>
-
-  <div class="panel">
-    <div class="row" style="justify-content:space-between"><h2>Statement files</h2><button class="btn ghost sm" id="famRefresh" hidden>Refresh family</button></div>
-    <div class="files" id="files"></div>
-    <div class="famnote" id="famNote" hidden></div>
-    <div class="row">
-      <button class="btn ghost sm" id="exportBtn">Export combined CSV</button>
-    </div>
-    <p class="small muted" id="privacyNote">Statements are stored privately in your account. Only you can see them, even if you share this page, unless you turn on family sharing for a file.</p>
-  </div>
+    <div id="alerts" class="stack" style="gap:8px"></div>
+    <div class="banner" id="exampleBanner" hidden><b>Example data.</b> Made-up transactions so you can see how it works. They disappear when you add your first statement.</div>
+    <div class="seg" id="subtabs" role="tablist" hidden></div>
+    <div id="view" class="stack" style="gap:14px"></div>
+    <p class="tiny muted" id="saveState" style="text-align:center"></p>
+  </main>
 </div>
+<nav class="tabbar" id="tabbar" aria-label="Sections"></nav>
+<input type="file" id="fileIn" accept=".csv,.xls,.xlsx,.pdf,text/csv,application/pdf" multiple hidden>

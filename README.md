@@ -18,6 +18,22 @@ Runs entirely on Cloudflare:
 
 Until step 2 is done, the site loads but the API refuses every request.
 
+## Screens
+
+Four sections, same on phone (bottom tabs) and PC (left sidebar):
+- **Overview**: this month's spending ring against your usual, categories with a "usual" marker, money out (spent / invested / to people), money in and left over, bills coming up, investing.
+- **Spending**: Categories (by category or by shop, search), Bills (repeat charges, what's due next), To sort (unknown transactions, with the "What was this?" sheet: purchase, split bill, friend, own account, family, refund).
+- **Money moves**: Money in (sources, money in vs out by month), Accounts (coverage per account, transfers paired between accounts, accounts that transfers point to but aren't uploaded, statement files), Investing (per platform), People.
+- **Goals**: Limits (monthly cap and per-category limits) and Goals (save up, invest, spend less, keep a buffer).
+
+## Importing
+
+- Pick several files at once. The account number is read from the top of DBS/POSB CSVs (or typed in).
+- Overlapping exports are fine: rows already stored are counted and skipped, so two identical $1.50 kopis on one day both stay.
+- Card purchases are dated by the real purchase date in the text (e.g. `12OCT`) rather than the posting date.
+- Bank exports only contain posted transactions; pending card payments appear in the next export.
+- Transfers between the family's accounts (same amount, opposite direction, within 3 days) are paired and not counted.
+
 ## How merchants get sorted
 
 1. Household rules: anything anyone in the family sorted, shared by all.
@@ -33,6 +49,6 @@ Until step 2 is done, the site loads but the API refuses every request.
 - `web/app.js`: the page's behaviour
 - `build.mjs`: bundles the page into `dist/worker.js`
 - `schema.sql`: D1 tables
-- `test/`: local test server with in-memory D1 and mocked AI (`node test/unit.mjs`; `python3 test/e2e.py <statement.csv>` for the browser test)
+- `test/`: local test server with in-memory D1 and mocked AI. `node test/unit.mjs` for logic and API; `node test/ui.mjs` clicks through every screen with made-up statements (`test/make_fixtures.py`). Needs `npm i --no-save playwright xlsx@0.18.5`.
 
 Never commit real statements. `*.csv` and `*.pdf` are git-ignored.

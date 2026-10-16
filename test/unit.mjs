@@ -54,6 +54,41 @@ const big = await worker.fetch(new Request("http://localhost/api/files", { metho
 const fid = (await big.json()).id; const stored = JSON.parse(sqlite.prepare("SELECT tx FROM files WHERE id=?").get(fid).tx);
 ok(stored.length === 1 && stored[0][3] === "Other", "server drops malformed rows and unknown categories");
 
+// --- import helpers (pure functions from web/parse.js) ---
+{
+  const src = (await import("node:fs")).readFileSync(here + "../web/parse.js", "utf8");
+  const P = new Function(src + ";return {purchaseDate,accountFromRows,shortAcct,dedupeCount,pairTransfers,applyShare,autoCategory,NON_SPEND};")();
+  ok(P.purchaseDate("2026-10-14", "MST SHOPEE SG SI SGP 12OCT") === "2026-10-12", "card purchase date read from 12OCT");
+  ok(P.purchaseDate("2026-01-02", "X SI SGP 30DEC") === "2025-12-30", "purchase date across new year");
+  ok(P.purchaseDate("2026-10-14", "X 20OCT") === "2026-10-14", "future 'purchase date' ignored");
+  ok(P.accountFromRows([["Account Details For:", "POSB Savings Account 123-45692-9"], [], ["Transaction Date", "Description"]], 2) === "123-45692-9", "account number found above the header");
+  ok(P.shortAcct("123-45692-9") === "…692-9", "account shown as last digits");
+  const d = P.dedupeCount([["2026-10-01", "KOPI", -1.5], ["2026-10-01", "KOPI", -1.5]], [["2026-10-01", "KOPI", -1.5], ["2026-10-01", "KOPI", -1.5], ["2026-10-01", "KOPI", -1.5], ["2026-10-02", "X", -3]]);
+  ok(d.dup === 2 && d.fresh.length === 2, "overlap counted: 2 of 3 identical kopis already there, third kept");
+  const pr = P.pairTransfers([{ id: 1, date: "2026-10-14", amt: -1654, acct: "A", cat: "Transfers" }, { id: 2, date: "2026-10-15", amt: 1654, acct: "B", cat: "Transfers" }, { id: 3, date: "2026-10-15", amt: 1654, acct: "A", cat: "Transfers" }, { id: 4, date: "2026-10-30", amt: -50, acct: "A", cat: "Transfers" }, { id: 5, date: "2026-10-20", amt: 50, acct: "B", cat: "Transfers" }]);
+  ok(pr.get(1) === 2 && !pr.has(3) && !pr.has(4), "transfers paired across accounts within 3 days only");
+  ok(P.applyShare(-68, "50%") === -34 && P.applyShare(-68, "20") === -20 && P.applyShare(-10, "20") === -10 && P.applyShare(25, "50%") === 25, "split share applied to payments only");
+  ok(P.autoCategory("ICT PayNow Transfer 1 To: JOHN TAN OTHR", -20, {})[0] === "People" && P.NON_SPEND.has("People"), "PayNow to a person is People, not spending");
+}
+// --- server: people, rule details, accounts, goals ---
+{
+  const E = { DB, DEV_EMAIL: "bryan@example.com" };
+  const call = (method, path, body) => worker.fetch(new Request("http://localhost" + path, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }), E, {});
+  const f = await (await call("POST", "/api/files", { name: "a.csv", person: "Bryan", account: "123-45692-9", tx: [["2026-10-01", "ICT PayNow To: JOHN", -20, "People"], ["2026-10-02", "DINNER", -68, "Food & Dining", 0, "50%"], ["2026-10-03", "X", -5, "Food & Dining", 1, "bad!"]] })).json();
+  await call("POST", "/api/rules", { set: { "INFINITE FLORIST": { c: "Shopping", note: "Flowers for a birthday", share: "20", tag: "" }, "HO LENG": { c: "Income", note: "Pocket money", tag: "family" }, "BAD": { c: "Nope" } } });
+  await call("PUT", "/api/budgets", { scope: "goals", data: [{ id: "g1", kind: "save", name: "Japan", target: 3000, start: "2026-10" }, { kind: "evil", target: "x" }] });
+  await call("PUT", "/api/budgets", { scope: "All", data: { Total: 1300, Shopping: 300, Hacker: 5 } });
+  const data = await (await call("GET", "/api/data")).json();
+  const file = data.files.find(x => x.id === f.id);
+  ok(file.account === "123-45692-9", "account number stored with the statement");
+  ok(file.tx[0][3] === "People" && JSON.stringify(file.tx[1]) === JSON.stringify(["2026-10-02", "DINNER", -68, "Food & Dining", 0, "50%"]) && file.tx[2].length === 5, "People category and split share kept; bad share dropped");
+  ok(data.rules["INFINITE FLORIST"] === "Shopping" && data.notes["INFINITE FLORIST"] === "Flowers for a birthday" && data.meta["INFINITE FLORIST"].share === "20", "rule saved with note and split share");
+  ok(data.meta["HO LENG"].tag === "family" && !("BAD" in data.rules), "family tag saved; unknown category refused");
+  ok(data.budgets.goals.length === 2 && data.budgets.goals[0].target === 3000 && data.budgets.goals[1].kind === "save" && data.budgets.goals[1].target === 0, "goals saved and cleaned");
+  ok(data.budgets.All.Total === 1300 && data.budgets.All.Shopping === 300 && !("Hacker" in data.budgets.All), "monthly cap saved with limits");
+  await call("PUT", "/api/files/" + f.id, { account: "POSB Savings" });
+  ok((await (await call("GET", "/api/data")).json()).files.find(x => x.id === f.id).account === "POSB Savings", "account label can be renamed");
+}
 // --- Google sign-in (runs last: it fills the family list) ---
 {
   const gkp = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);

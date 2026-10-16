@@ -2,7 +2,7 @@
 // Build: node build.mjs  (embeds the web page into dist/worker.js)
 const INDEX_HTML = "__INDEX_HTML__";
 
-const CATS = ["Food & Dining","Groceries","Transport","Shopping","Bills & Utilities","Subscriptions","Health","Entertainment","Travel","Education","Insurance","Cash","Income","Transfers","Investing","Other"];
+const CATS = ["Food & Dining","Groceries","Transport","Shopping","Bills & Utilities","Subscriptions","Health","Entertainment","Travel","Education","Insurance","Cash","Income","Transfers","Investing","People","Other"];
 const MAX_TX_BYTES = 1_900_000; // D1 row limit is 2 MB
 
 export default {
@@ -108,6 +108,9 @@ async function ensureSchema(db) {
     db.prepare("CREATE TABLE IF NOT EXISTS members (email TEXT PRIMARY KEY, added INTEGER)"),
     db.prepare("CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT)"),
   ]);
+  // columns added after launch (ignore "duplicate column" on later runs)
+  for (const sql of ["ALTER TABLE files ADD COLUMN account TEXT NOT NULL DEFAULT ''", "ALTER TABLE rules ADD COLUMN share TEXT", "ALTER TABLE rules ADD COLUMN tag TEXT"])
+    await db.prepare(sql).run().catch(() => {});
   schemaReady = true;
 }
 async function setting(env, k) { const r = await env.DB.prepare("SELECT v FROM settings WHERE k=?").bind(k).first(); return r ? r.v : ""; }
@@ -206,18 +209,18 @@ async function route(req, env, url, email) {
 
   if (p === "/api/data" && m === "GET") {
     const [files, rules, budgets, lookups, users] = await db.batch([
-      db.prepare("SELECT id,owner,name,person,added,shared,tx FROM files WHERE owner=? OR shared=1 ORDER BY added").bind(email),
-      db.prepare("SELECT merchant,category,source,note FROM rules"),
+      db.prepare("SELECT id,owner,name,person,account,added,shared,tx FROM files WHERE owner=? OR shared=1 ORDER BY added").bind(email),
+      db.prepare("SELECT merchant,category,source,note,share,tag FROM rules"),
       db.prepare("SELECT scope,data FROM budgets WHERE owner=?").bind(email),
       db.prepare("SELECT merchant,what,category,confidence FROM lookups"),
       db.prepare("SELECT email,name FROM users"),
     ]);
     const names = Object.fromEntries(users.results.map(u => [u.email, u.name]));
     const out = {
-      files: files.results.map(f => ({ id: f.id, name: f.name, person: f.person, added: f.added, shared: !!f.shared, mine: f.owner === email, ownerName: f.owner === email ? "" : (names[f.owner] || "family"), tx: safeParse(f.tx, []) })),
-      rules: {}, notes: {}, budgets: {}, lookups: {},
+      files: files.results.map(f => ({ id: f.id, name: f.name, person: f.person, account: f.account || "", added: f.added, shared: !!f.shared, mine: f.owner === email, ownerName: f.owner === email ? "" : (names[f.owner] || "family"), tx: safeParse(f.tx, []) })),
+      rules: {}, notes: {}, meta: {}, budgets: {}, lookups: {},
     };
-    for (const r of rules.results) { out.rules[r.merchant] = r.category; if (r.note) out.notes[r.merchant] = r.note; }
+    for (const r of rules.results) { out.rules[r.merchant] = r.category; if (r.note) out.notes[r.merchant] = r.note; if (r.share || r.tag) out.meta[r.merchant] = { share: r.share || "", tag: r.tag || "" }; }
     for (const b of budgets.results) out.budgets[b.scope] = safeParse(b.data, {});
     for (const l of lookups.results) out.lookups[l.merchant] = { what: l.what, category: l.category, confidence: l.confidence };
     return json(out);
@@ -229,8 +232,8 @@ async function route(req, env, url, email) {
     const id = /^[A-Za-z0-9_-]{4,40}$/.test(b.id || "") ? b.id : crypto.randomUUID();
     const existing = await db.prepare("SELECT owner FROM files WHERE id=?").bind(id).first();
     const finalId = existing ? crypto.randomUUID() : id;
-    await db.prepare("INSERT INTO files(id,owner,name,person,added,shared,tx) VALUES(?,?,?,?,?,?,?)")
-      .bind(finalId, email, String(b.name || "statement").slice(0, 120), String(b.person || "Me").slice(0, 30), Number(b.added) || Date.now(), b.shared ? 1 : 0, tx).run();
+    await db.prepare("INSERT INTO files(id,owner,name,person,account,added,shared,tx) VALUES(?,?,?,?,?,?,?,?)")
+      .bind(finalId, email, String(b.name || "statement").slice(0, 120), String(b.person || "Me").slice(0, 30), String(b.account || "").slice(0, 40), Number(b.added) || Date.now(), b.shared ? 1 : 0, tx).run();
     return json({ id: finalId });
   }
   const fm = p.match(/^\/api\/files\/([A-Za-z0-9_-]{1,64})$/);
@@ -246,6 +249,7 @@ async function route(req, env, url, email) {
       if (b.shared !== undefined) { sets.push("shared=?"); vals.push(b.shared ? 1 : 0); }
       if (b.person !== undefined) { sets.push("person=?"); vals.push(String(b.person).slice(0, 30)); }
       if (b.name !== undefined) { sets.push("name=?"); vals.push(String(b.name).slice(0, 120)); }
+      if (b.account !== undefined) { sets.push("account=?"); vals.push(String(b.account).slice(0, 40)); }
       if (!sets.length) return json({ ok: true });
       await db.prepare(`UPDATE files SET ${sets.join(",")} WHERE id=?`).bind(...vals, id).run();
       return json({ ok: true });
@@ -257,8 +261,12 @@ async function route(req, env, url, email) {
     const stmts = [];
     for (const [k, c] of Object.entries(b.set || {}).slice(0, 2000)) {
       const key = String(k).slice(0, 60);
-      if (c === null) stmts.push(db.prepare("DELETE FROM rules WHERE merchant=?").bind(key));
-      else if (CATS.includes(c)) stmts.push(db.prepare("INSERT INTO rules(merchant,category,source,note,by,updated) VALUES(?,?,'you',NULL,?,?) ON CONFLICT(merchant) DO UPDATE SET category=excluded.category,source='you',by=excluded.by,updated=excluded.updated").bind(key, c, email, Date.now()));
+      if (c === null) { stmts.push(db.prepare("DELETE FROM rules WHERE merchant=?").bind(key)); continue; }
+      const r = typeof c === "string" ? { c } : (c && typeof c === "object" ? c : {});
+      if (!CATS.includes(r.c)) continue;
+      if (typeof c === "string") stmts.push(db.prepare("INSERT INTO rules(merchant,category,source,note,by,updated) VALUES(?,?,'you',NULL,?,?) ON CONFLICT(merchant) DO UPDATE SET category=excluded.category,source='you',by=excluded.by,updated=excluded.updated").bind(key, r.c, email, Date.now()));
+      else stmts.push(db.prepare("INSERT INTO rules(merchant,category,source,note,share,tag,by,updated) VALUES(?,?,'you',?,?,?,?,?) ON CONFLICT(merchant) DO UPDATE SET category=excluded.category,source='you',note=excluded.note,share=excluded.share,tag=excluded.tag,by=excluded.by,updated=excluded.updated")
+        .bind(key, r.c, cleanNote(r.note), cleanShare(r.share), ["family", "own", ""].includes(r.tag) ? (r.tag || null) : null, email, Date.now()));
     }
     for (let i = 0; i < stmts.length; i += 100) await db.batch(stmts.slice(i, i + 100));
     return json({ ok: true, saved: stmts.length });
@@ -267,8 +275,19 @@ async function route(req, env, url, email) {
   if (p === "/api/budgets" && m === "PUT") {
     const b = await body(req);
     const scope = String(b.scope || "All").slice(0, 30);
+    if (scope === "goals") {
+      const goals = (Array.isArray(b.data) ? b.data : []).slice(0, 20).map(g => ({
+        id: String(g.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 20) || crypto.randomUUID().slice(0, 8),
+        kind: ["save", "invest", "spend", "buffer"].includes(g.kind) ? g.kind : "save",
+        name: String(g.name || "").slice(0, 40), target: Math.max(0, Math.round(Number(g.target) * 100) / 100 || 0),
+        start: /^\d{4}-\d{2}$/.test(g.start || "") ? g.start : "", who: String(g.who || "All").slice(0, 30),
+      }));
+      if (goals.length) await db.prepare("INSERT INTO budgets(owner,scope,data) VALUES(?,?,?) ON CONFLICT(owner,scope) DO UPDATE SET data=excluded.data").bind(email, scope, JSON.stringify(goals)).run();
+      else await db.prepare("DELETE FROM budgets WHERE owner=? AND scope=?").bind(email, scope).run();
+      return json({ ok: true });
+    }
     const data = {};
-    for (const [c, v] of Object.entries(b.data || {})) if (CATS.includes(c) && Number(v) > 0) data[c] = Math.round(Number(v) * 100) / 100;
+    for (const [c, v] of Object.entries(b.data || {})) if ((CATS.includes(c) || c === "Total") && Number(v) > 0) data[c] = Math.round(Number(v) * 100) / 100;
     if (Object.keys(data).length) await db.prepare("INSERT INTO budgets(owner,scope,data) VALUES(?,?,?) ON CONFLICT(owner,scope) DO UPDATE SET data=excluded.data").bind(email, scope, JSON.stringify(data)).run();
     else await db.prepare("DELETE FROM budgets WHERE owner=? AND scope=?").bind(email, scope).run();
     return json({ ok: true });
@@ -281,6 +300,9 @@ async function route(req, env, url, email) {
   throw fail(404, "Not found");
 }
 
+function cleanNote(n) { const s = String(n ?? "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 80); return s || null; }
+// split-bill share: "50%" or a fixed amount like "20" / "20.50"
+function cleanShare(v) { const s = String(v ?? "").trim(); if (/^(100|[1-9]?\d)(\.\d+)?%$/.test(s)) return s; if (/^\d{1,6}(\.\d{1,2})?$/.test(s) && Number(s) > 0) return s; return null; }
 function safeParse(s, d) { try { return JSON.parse(s); } catch { return d; } }
 function cleanTx(tx) {
   if (!Array.isArray(tx)) throw fail(400, "tx must be a list");
@@ -288,7 +310,9 @@ function cleanTx(tx) {
   for (const t of tx) {
     if (!Array.isArray(t) || !/^\d{4}-\d{2}-\d{2}$/.test(t[0]) || typeof t[2] !== "number" || !isFinite(t[2])) continue;
     const row = [t[0], String(t[1] ?? "").slice(0, 160), Math.round(t[2] * 100) / 100, CATS.includes(t[3]) ? t[3] : "Other"];
-    if (t[4] === 1) row.push(1);
+    const share = cleanShare(t[5]);
+    if (t[4] === 1 || share) row.push(t[4] === 1 ? 1 : 0);
+    if (share) row.push(share);
     out.push(row);
   }
   const s = JSON.stringify(out);
