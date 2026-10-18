@@ -23,6 +23,11 @@ for i in range(107):
         A.append((d,'ITR','FUND TRANSFER TO 245-004147-0',-amt)); B.append((d+dt.timedelta(days=1),'ITR','FUND TRANSFER FROM 123-45692-9',amt))
     if d.day==8: B.append((d,'IDT','IBKR SINGAPORE PTE LTD FAST TRF',-1000.0))
     if d.day==25: A.append((d,'ICT','PayNow Transfer 8842 To: INFINITE FLORIST PTE LTD OTHR',-68.0))
+    # FloofMart (business) payments: a monthly tool, a bulk card buy paid in two parts, a jointly paid lot (my half)
+    if d.day==14: A.append((d,'POS',f'PRICECHARTING.COM SI SGP {d.day-1}{d.strftime("%b").upper()}',-65.3))
+    if d==dt.date(2026,10,10): A.append((d,'ICT','PayNow Transfer 771001 To: LIM AH SENG OTHR',-215.0)); A.append((d,'ICT','PayNow Transfer 771002 To: LIM AH SENG OTHR',-520.0))
+    if d==dt.date(2026,8,15): A.append((d,'ICT','PayNow Transfer 660110 To: CARDS R US TRADING OTHR',-267.5))
+    if d==dt.date(2026,9,2): A.append((d,'POS','SHOPEE SG MP SINGAPORE SGP',-37.37))
 # two identical kopi same day to test counting
 A.append((dt.date(2026,9,9),'POS','YA KUN KAYA TOAST SI SGP 08SEP',-1.5)); A.append((dt.date(2026,9,9),'POS','YA KUN KAYA TOAST SI SGP 08SEP',-1.5))
 open(os.path.join(sys.argv[1],'acctA.csv'),'w').write(csv('123-45692-9',A))
@@ -30,3 +35,17 @@ open(os.path.join(sys.argv[1],'acctB.csv'),'w').write(csv('245-004147-0',B))
 # overlap file: Sep 1 - Oct 15 of A again
 open(os.path.join(sys.argv[1],'acctA_overlap.csv'),'w').write(csv('123-45692-9',[r for r in A if r[0]>=dt.date(2026,9,1)]))
 print(len(A),len(B))
+
+# FloofMart's Ledger tab exported as CSV (Bryan's format: blank dates on old rows, "You; Danish" contributors)
+L=['date,type,category,amount,notes,contributors,amount spent by each,',
+   ',Inventory,Cards,535,"Card lot, bought jointly",You; Danish,267.50; 267.50,',
+   ',Inventory,Cards,460,"Card lot, solo",You,460,',
+   ',Overhead,Software,37.37,Storage boxes (Shopee),You,37.37,',
+   '2026-10-10,Inventory,Cards,215,Bulk — first part,You,215,',
+   '2026-10-10,Inventory,Cards,520,Bulk — 19200 EN SWSH,You,520,',
+   '2026-10-13,Overhead,Software,65.3,PriceCharting Legendary (monthly),You,65.3,',
+   '2026-09-13,Overhead,Software,65.3,PriceCharting Legendary (monthly),You,65.3,',
+   '2026-10-11,Overhead,Supplies,12.5,Sleeves (cash),You,12.5,',
+   '2026-10-12,Equipment,Hardware,89,Label printer,Danish,89,',
+   ',Loss,Scam,510,Scammed on a deal,You,510,']
+open(os.path.join(sys.argv[1],'ledger.csv'),'w').write("\n".join(L)+"\n")

@@ -242,4 +242,71 @@ function applyShare(amt, share){
   const s=String(share); if(s.endsWith("%")) return Math.round(amt*parseFloat(s)/100*100)/100;
   const v=parseFloat(s); return isFinite(v)&&v>0 ? -Math.min(v,-amt) : amt;
 }
+/* --- business: FloofMart's Ledger tab (date, type, category, amount, notes, contributors, amount spent by each) --- */
+const BIZ_COLS={date:["date","day","when"], type:["type","kind"], cat:["category","cat"], amt:["amount","amt","total","cost"], notes:["notes","note","description","what","item"],
+  who:["contributors","contributor","paid by","who","by"], each:["amount spent by each","spent by each","each","split"]};
+const BIZ_INCOME=/^(revenue|income|sale|sales)$/i;
+function bizNum(v){ if(typeof v==="number") return isFinite(v)?v:0; const n=Number(String(v==null?"":v).replace(/^\s*S\$/i,"").replace(/[$,\s]/g,"")); return isFinite(n)?n:0; }
+function bizHeader(rows){
+  for(let i=0;i<Math.min(rows.length,15);i++){
+    const names=(rows[i]||[]).map(c=>String(c==null?"":c).trim().toLowerCase());
+    const col={}; for(const [k,alts] of Object.entries(BIZ_COLS)){ const j=names.findIndex(n=>n&&alts.includes(n)); if(j>=0) col[k]=j; }
+    if(col.amt!=null&&(col.type!=null||col.notes!=null)) return {row:i,col};
+  }
+  return null;
+}
+// rows (arrays of cells) -> ledger rows {r:sheet row, d:ISO date or "", t:type, c:category, a:amount, n:notes, w:[[name, amount]]}
+function parseBizLedger(rows){
+  const h=bizHeader(rows); if(!h) return null;
+  const out=[]; const {col}=h; const cell=(r,k)=>col[k]==null?"":r[col[k]];
+  rows.slice(h.row+1).forEach((r,i)=>{
+    r=r||[]; const a=Math.round(Math.abs(bizNum(cell(r,"amt")))*100)/100;
+    const t=String(cell(r,"type")||"").trim(), n=String(cell(r,"notes")||"").replace(/\s+/g," ").trim();
+    if(!a&&!t&&!n) return;
+    const names=String(cell(r,"who")||"").split(/\s*[;,\/&+]\s*|\s+and\s+/i).map(x=>x.trim()).filter(Boolean);
+    const each=String(cell(r,"each")||"").split(/\s*[;,\/]\s*/).map(x=>x.trim()).filter(Boolean);
+    let w=[];
+    if(names.length&&each.length===names.length&&each.every(x=>/^\$?-?[\d.,]+$/.test(x))) w=names.map((nm,k)=>[nm,Math.round(bizNum(each[k])*100)/100]);
+    else if(names.length) w=names.map(nm=>[nm,Math.round(a/names.length*100)/100]);
+    out.push({r:h.row+i+2, d:parseDate(cell(r,"date"))||"", t:t||"Expense", c:String(cell(r,"cat")||"").trim(), a, n, w});
+  });
+  return out;
+}
+// what this row means for the family's own bank accounts
+function bizExpense(row, self){
+  const me=(self||[]).map(x=>String(x||"").trim().toLowerCase()).filter(Boolean).concat(["you","me","myself","own","self"]);
+  const income=BIZ_INCOME.test(row.t||"");
+  let mine=row.a, others=[];
+  if(row.w&&row.w.length){ mine=0; row.w.forEach(([nm,v])=>{ if(me.includes(String(nm).toLowerCase())) mine+=v; else others.push(nm); }); mine=Math.round(mine*100)/100; }
+  return {mine, income, others};
+}
+// ledger rows vs bank transactions. tx: [{id, date, post, raw, cat, pair}]. links: {"r<row>": txId | "none", "t<txId>": 1}
+// returns {byTx: Map(txId -> row), byRow: Map(row -> txId), skipped: Set(row)}
+const BIZ_DAYS=5;
+function matchBusiness(rows, tx, links, self){
+  links=links||{}; const byTx=new Map(), byRow=new Map(), skipped=new Set();
+  const cands=tx.filter(t=>t.raw<0&&!t.pair&&t.cat!=="Income"&&t.cat!=="Transfers");
+  const byId=new Map(cands.map(t=>[t.id,t]));
+  const amtKey=v=>Math.round(Math.abs(v)*100);
+  const byAmt=new Map(); cands.forEach(t=>{ const k=amtKey(t.raw); (byAmt.get(k)||byAmt.set(k,[]).get(k)).push(t); });
+  const todo=[];
+  for(const row of rows){
+    const L=links["r"+row.r];
+    if(L==="none"){ skipped.add(row.r); continue; }
+    if(L&&byId.has(L)&&!byTx.has(L)){ byTx.set(L,row); byRow.set(row.r,L); continue; }
+    const E=bizExpense(row,self); if(E.income||E.mine<=0) continue;
+    todo.push({row,mine:E.mine});
+  }
+  const dist=(t,d)=>Math.min(Math.abs(Date.parse(t.date)-Date.parse(d)),Math.abs(Date.parse(t.post)-Date.parse(d)))/864e5;
+  // dated rows first (nearest in time), then undated rows only when exactly one candidate is left for that amount
+  todo.filter(x=>x.row.d).sort((a,b)=>a.row.d.localeCompare(b.row.d)).forEach(({row,mine})=>{
+    const list=(byAmt.get(amtKey(mine))||[]).filter(t=>!byTx.has(t.id)&&dist(t,row.d)<=BIZ_DAYS).sort((a,b)=>dist(a,row.d)-dist(b,row.d));
+    if(list.length){ byTx.set(list[0].id,row); byRow.set(row.r,list[0].id); }
+  });
+  todo.filter(x=>!x.row.d).forEach(({row,mine})=>{
+    const list=(byAmt.get(amtKey(mine))||[]).filter(t=>!byTx.has(t.id));
+    if(list.length===1){ byTx.set(list[0].id,row); byRow.set(row.r,list[0].id); }
+  });
+  return {byTx, byRow, skipped};
+}
 /*PURE-END*/

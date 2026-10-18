@@ -21,16 +21,34 @@ await p.click("#addTop"); await p.setInputFiles("#fileIn",[D+"/acctA.csv",D+"/ac
 // set person
 await p.fill("#upWho","Bryan"); await p.dispatchEvent("#upWho","change"); await p.waitForTimeout(300);
 const pills=await p.locator(".review .pill").allInnerTexts(), accts=await p.locator('.review input[data-k="account"]').evaluateAll(es=>es.map(e=>e.value));
-ok(pills.join()==="120 new,11 new", "both statements read: "+pills.join(" / "));
+ok(pills.join()==="128 new,11 new", "both statements read: "+pills.join(" / "));
 ok(accts.join()==="123-45692-9,245-004147-0", "account numbers detected from the files");
 await p.screenshot({path:OUT+"/1-upload.png",fullPage:true});
 await p.click("#addAll"); await p.waitForTimeout(1500);
 await p.screenshot({path:OUT+"/2-upload-done.png",fullPage:true});
 // overlap
 await p.setInputFiles("#fileIn",[D+"/acctA_overlap.csv"]); await p.waitForTimeout(800);
-ok((await p.locator(".review .pill").allInnerTexts()).join()==="0 new · 50 already had", "overlapping export adds nothing new");
+ok((await p.locator(".review .pill").allInnerTexts()).join()==="0 new · 55 already had", "overlapping export adds nothing new");
 await p.click('.review [data-a="skip"]'); await p.keyboard.press("Escape"); await p.waitForTimeout(300);
-const shots=[["home",""],["spend","cats"],["spend","bills"],["spend","sort"],["moves","in"],["moves","accounts"],["moves","investing"],["moves","people"],["goals","limits"],["goals","goals"]];
+// FloofMart's Ledger: upload the export, check the matching
+await p.evaluate(()=>{ location.hash="moves/biz"; }); await p.waitForTimeout(300);
+await p.screenshot({path:OUT+"/m-biz-empty.png",fullPage:true});
+await p.setInputFiles("#bizIn",[D+"/ledger.csv"]); await p.waitForTimeout(900);
+const octText=await p.locator("#view").innerText();
+ok(/3 matched/.test(octText)&&/1 not found/.test(octText)&&/undated rows only show under All time/.test(octText), "October: the three dated October buys matched, the cash sleeves not found, undated rows deferred to All time");
+await p.selectOption("#monthSel","all"); await p.waitForTimeout(400);
+const bizText=await p.locator("#view").innerText();
+ok(/6 matched/.test(bizText)&&/3 not found/.test(bizText)&&/1 paid by others/.test(bizText), "all time: 6 matched (incl. two undated rows by unique amount), 3 not found (cash + two old lots), 1 paid by Danish: "+(bizText.match(/\d+ matched[\s\S]*?paid by others/)||[""])[0].replace(/\s+/g," "));
+ok(/Card lot, bought jointly[\s\S]*\$267\.50[\s\S]*of \$535\.00/.test(bizText), "a joint buy counts only my half");
+ok(/Label printer/.test(bizText)&&/Not found in your statements[\s\S]*Sleeves \(cash\)/.test(bizText), "Danish's printer listed under paid by others; the cash sleeves under not found");
+await p.screenshot({path:OUT+"/m-biz.png",fullPage:true});
+// link the cash row by hand, then skip it
+await p.click('[data-blink]'); await p.waitForTimeout(300); await p.screenshot({path:OUT+"/m-biz-pick.png"});
+await p.click("[data-none]"); await p.waitForTimeout(400);
+ok(/Skipped[\s\S]*Card lot, solo/.test(await p.locator("#view").innerText()), "a row can be skipped by hand");
+await p.evaluate(()=>{ location.hash="home"; }); await p.waitForTimeout(300);
+ok(/Business/.test(await p.locator("#view").innerText())&&/FloofMart costs · kept out of family spending/.test(await p.locator("#view").innerText()), "Overview shows business money out separately");
+const shots=[["home",""],["spend","cats"],["spend","bills"],["spend","sort"],["moves","in"],["moves","accounts"],["moves","investing"],["moves","people"],["moves","biz"],["goals","limits"],["goals","goals"]];
 for(const [t,s] of shots){ await p.evaluate(([t,s])=>{ location.hash=t+(s?"/"+s:""); },[t,s]); await p.waitForTimeout(350); await p.screenshot({path:`${OUT}/m-${t}-${s||"x"}.png`,fullPage:true}); }
 // identify sheet from To sort
 await p.evaluate(()=>{ location.hash="spend/sort"; }); await p.waitForTimeout(300);
@@ -57,5 +75,11 @@ await q.screenshot({path:OUT+"/m-limits2.png",fullPage:true});
 await q.evaluate(()=>{ location.hash="goals/goals"; }); await q.waitForTimeout(300); await q.click('[data-newgoal="save"]'); await q.fill("#gName","Japan trip"); await q.fill("#gTarget","3000"); await q.click("#gSave"); await q.waitForTimeout(400);
 await q.screenshot({path:OUT+"/m-goals2.png",fullPage:true});
 await q.reload(); await q.waitForTimeout(800); ok(/Japan trip/.test(await q.locator("#view").innerText()), "goal saved and still there after reload");
+// mark a payment as FloofMart from "What was this?" (no ledger yet): it leaves family spending
+await q.evaluate(()=>{ location.hash="spend/cats"; }); await q.waitForTimeout(300); await q.fill("#q","pricecharting"); await q.waitForTimeout(200);
+await q.locator("#qres .it").first().click(); await q.waitForTimeout(300); await q.click('#idKinds [data-k="business"]'); await q.click('input[name="idScope"][value="always"]'); await q.click("#idSave"); await q.waitForTimeout(500);
+await q.evaluate(()=>{ location.hash="moves/biz"; }); await q.waitForTimeout(300); await q.selectOption("#monthSel","all"); await q.waitForTimeout(400);
+ok(/In your bank, not in the Ledger[\s\S]*PRICECHARTING/.test(await q.locator("#view").innerText()), "a payment marked FloofMart by hand shows as not in the Ledger (the July and August ones, with no Ledger row)");
+await q.screenshot({path:OUT+"/m-biz-tagged.png",fullPage:true});
 ok(!qe.length, "no page errors (second pass)"); await b2.close(); srv2.close();
 process.exitCode=fails?1:0;

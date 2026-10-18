@@ -107,6 +107,8 @@ async function ensureSchema(db) {
   await db.batch([
     db.prepare("CREATE TABLE IF NOT EXISTS members (email TEXT PRIMARY KEY, added INTEGER)"),
     db.prepare("CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT)"),
+    // the business (FloofMart) Ledger: one row per owner, rows copied from the Google Sheet's Ledger tab
+    db.prepare("CREATE TABLE IF NOT EXISTS business (owner TEXT PRIMARY KEY, sheet TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', tab TEXT NOT NULL DEFAULT 'Ledger', rows TEXT NOT NULL DEFAULT '[]', links TEXT NOT NULL DEFAULT '{}', updated INTEGER)"),
   ]);
   // columns added after launch (ignore "duplicate column" on later runs)
   for (const sql of ["ALTER TABLE files ADD COLUMN account TEXT NOT NULL DEFAULT ''", "ALTER TABLE rules ADD COLUMN share TEXT", "ALTER TABLE rules ADD COLUMN tag TEXT"])
@@ -208,12 +210,13 @@ async function route(req, env, url, email) {
   }
 
   if (p === "/api/data" && m === "GET") {
-    const [files, rules, budgets, lookups, users] = await db.batch([
+    const [files, rules, budgets, lookups, users, biz] = await db.batch([
       db.prepare("SELECT id,owner,name,person,account,added,shared,tx FROM files WHERE owner=? OR shared=1 ORDER BY added").bind(email),
       db.prepare("SELECT merchant,category,source,note,share,tag FROM rules"),
       db.prepare("SELECT scope,data FROM budgets WHERE owner=?").bind(email),
       db.prepare("SELECT merchant,what,category,confidence FROM lookups"),
       db.prepare("SELECT email,name FROM users"),
+      db.prepare("SELECT sheet,name,tab,rows,links,updated FROM business WHERE owner=?").bind(email),
     ]);
     const names = Object.fromEntries(users.results.map(u => [u.email, u.name]));
     const out = {
@@ -223,6 +226,8 @@ async function route(req, env, url, email) {
     for (const r of rules.results) { out.rules[r.merchant] = r.category; if (r.note) out.notes[r.merchant] = r.note; if (r.share || r.tag) out.meta[r.merchant] = { share: r.share || "", tag: r.tag || "" }; }
     for (const b of budgets.results) out.budgets[b.scope] = safeParse(b.data, {});
     for (const l of lookups.results) out.lookups[l.merchant] = { what: l.what, category: l.category, confidence: l.confidence };
+    const bz = biz.results[0];
+    out.business = bz ? { sheet: bz.sheet, name: bz.name, tab: bz.tab, rows: safeParse(bz.rows, []), links: safeParse(bz.links, {}), updated: bz.updated } : null;
     return json(out);
   }
 
@@ -266,7 +271,7 @@ async function route(req, env, url, email) {
       if (!CATS.includes(r.c)) continue;
       if (typeof c === "string") stmts.push(db.prepare("INSERT INTO rules(merchant,category,source,note,by,updated) VALUES(?,?,'you',NULL,?,?) ON CONFLICT(merchant) DO UPDATE SET category=excluded.category,source='you',by=excluded.by,updated=excluded.updated").bind(key, r.c, email, Date.now()));
       else stmts.push(db.prepare("INSERT INTO rules(merchant,category,source,note,share,tag,by,updated) VALUES(?,?,'you',?,?,?,?,?) ON CONFLICT(merchant) DO UPDATE SET category=excluded.category,source='you',note=excluded.note,share=excluded.share,tag=excluded.tag,by=excluded.by,updated=excluded.updated")
-        .bind(key, r.c, cleanNote(r.note), cleanShare(r.share), ["family", "own", ""].includes(r.tag) ? (r.tag || null) : null, email, Date.now()));
+        .bind(key, r.c, cleanNote(r.note), cleanShare(r.share), ["family", "own", "biz", ""].includes(r.tag) ? (r.tag || null) : null, email, Date.now()));
     }
     for (let i = 0; i < stmts.length; i += 100) await db.batch(stmts.slice(i, i + 100));
     return json({ ok: true, saved: stmts.length });
@@ -293,6 +298,22 @@ async function route(req, env, url, email) {
     return json({ ok: true });
   }
 
+  // Business ledger (FloofMart): the page reads the Google Sheet's Ledger tab (or an export of it) and keeps a copy here,
+  // plus the manual links between ledger rows and bank transactions. Private to the owner.
+  if (p === "/api/business" && m === "PUT") {
+    const b = await body(req, 3_000_000);
+    const cur = await db.prepare("SELECT sheet,name,tab,rows,links FROM business WHERE owner=?").bind(email).first();
+    const sheet = b.sheet !== undefined ? String(b.sheet || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) : (cur?.sheet || "");
+    const name = b.name !== undefined ? txt(b.name, 80) : (cur?.name || "");
+    const tab = b.tab !== undefined ? (txt(b.tab, 40) || "Ledger") : (cur?.tab || "Ledger");
+    const rows = b.rows !== undefined ? JSON.stringify(cleanBizRows(b.rows)) : (cur?.rows || "[]");
+    const links = b.links !== undefined ? JSON.stringify(cleanBizLinks(b.links)) : (cur?.links || "{}");
+    await db.prepare("INSERT INTO business(owner,sheet,name,tab,rows,links,updated) VALUES(?,?,?,?,?,?,?) ON CONFLICT(owner) DO UPDATE SET sheet=excluded.sheet,name=excluded.name,tab=excluded.tab,rows=excluded.rows,links=excluded.links,updated=excluded.updated")
+      .bind(email, sheet, name, tab, rows, links, Date.now()).run();
+    return json({ ok: true, rows: JSON.parse(rows).length });
+  }
+  if (p === "/api/business" && m === "DELETE") { await db.prepare("DELETE FROM business WHERE owner=?").bind(email).run(); return json({ ok: true }); }
+
   if (p === "/api/lookup" && m === "POST") return json(await lookup(env, db, await body(req), email));
   if (p === "/api/analyse" && m === "POST") return json(await analyse(env, await body(req, 60_000)));
   if (p === "/api/pdf" && m === "POST") return json(await readPdf(env, await body(req, 12_000_000)));
@@ -304,6 +325,31 @@ function cleanNote(n) { const s = String(n ?? "").replace(/[\u0000-\u001f]/g, " 
 // split-bill share: "50%" or a fixed amount like "20" / "20.50"
 function cleanShare(v) { const s = String(v ?? "").trim(); if (/^(100|[1-9]?\d)(\.\d+)?%$/.test(s)) return s; if (/^\d{1,6}(\.\d{1,2})?$/.test(s) && Number(s) > 0) return s; return null; }
 function safeParse(s, d) { try { return JSON.parse(s); } catch { return d; } }
+const txt = (v, n) => String(v ?? "").replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, n);
+const num2 = v => { const n = Math.round(Number(v) * 100) / 100; return isFinite(n) ? n : 0; };
+// ledger rows: {r: sheet row, d: date or "", t: type, c: category, a: amount, n: notes, w: [[name, amount]]}
+function cleanBizRows(rows) {
+  if (!Array.isArray(rows)) throw fail(400, "rows must be a list");
+  const out = [];
+  for (const x of rows.slice(0, 4000)) {
+    if (!x || typeof x !== "object") continue;
+    const a = Math.abs(num2(x.a)); const t = txt(x.t, 30), n = txt(x.n, 160);
+    if (!a && !t && !n) continue;
+    const w = (Array.isArray(x.w) ? x.w : []).slice(0, 10).filter(p => Array.isArray(p) && typeof p[0] === "string" && txt(p[0], 30)).map(p => [txt(p[0], 30), num2(p[1])]);
+    out.push({ r: Math.max(0, Math.min(1e6, Math.floor(Number(x.r)) || 0)), d: /^\d{4}-\d{2}-\d{2}$/.test(x.d) ? x.d : "", t: t || "Expense", c: txt(x.c, 30), a, n, w });
+  }
+  return out;
+}
+// links: "r<ledger row>" -> transaction id (file id ":" index) or "none"; "t<transaction id>" -> 1 (marked business by hand)
+function cleanBizLinks(links) {
+  const out = {};
+  if (!links || typeof links !== "object") return out;
+  for (const [k, v] of Object.entries(links).slice(0, 5000)) {
+    if (/^r\d{1,7}$/.test(k) && (v === "none" || /^[A-Za-z0-9_-]{1,64}:\d{1,6}$/.test(String(v)))) out[k] = String(v);
+    else if (/^t[A-Za-z0-9_-]{1,64}:\d{1,6}$/.test(k) && v) out[k] = 1;
+  }
+  return out;
+}
 function cleanTx(tx) {
   if (!Array.isArray(tx)) throw fail(400, "tx must be a list");
   const out = [];

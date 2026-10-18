@@ -70,6 +70,39 @@ ok(stored.length === 1 && stored[0][3] === "Other", "server drops malformed rows
   ok(P.applyShare(-68, "50%") === -34 && P.applyShare(-68, "20") === -20 && P.applyShare(-10, "20") === -10 && P.applyShare(25, "50%") === 25, "split share applied to payments only");
   ok(P.autoCategory("ICT PayNow Transfer 1 To: JOHN TAN OTHR", -20, {})[0] === "People" && P.NON_SPEND.has("People"), "PayNow to a person is People, not spending");
 }
+// --- business: FloofMart's Ledger tab -> rows, matched to bank payments ---
+{
+  const src = (await import("node:fs")).readFileSync(here + "../web/parse.js", "utf8");
+  const P = new Function(src + ";return {parseBizLedger,bizExpense,matchBusiness};")();
+  const sheet = [["FloofMart"], [], ["date", "type", "category", "amount", "notes", "contributors", "amount spent by each", ""],
+    ["", "Inventory", "Cards", 535, "Card lot, bought jointly", "You; Danish", "267.50; 267.50"],
+    [46305, "Overhead", "Software", "S$65.30", "PriceCharting (monthly)", "You", "65.3"],   // 2026-10-10 as a Sheets serial number
+    ["10/10/2026", "Inventory", "Cards", 215, "Bulk — first part", "", ""],
+    ["2026-10-12", "Equipment", "Hardware", 89, "Label printer", "Danish", "89"],
+    ["", "", "", "", "", "", ""],
+    ["2026-10-01", "Sales", "", 120, "Drop 14", "", ""]];
+  const rows = P.parseBizLedger(sheet);
+  ok(rows && rows.length === 5 && rows[0].r === 4 && rows[0].a === 535 && JSON.stringify(rows[0].w) === JSON.stringify([["You", 267.5], ["Danish", 267.5]]), "Ledger header found by name, blank row skipped, contributors split: " + JSON.stringify(rows && rows[0]));
+  ok(rows[1].d === "2026-10-10" && rows[1].a === 65.3 && rows[2].d === "2026-10-10", "dates read as Sheets serial numbers, day-first text and ISO; S$ amounts cleaned");
+  const E = rows.map(r => P.bizExpense(r, ["Bryan"]));
+  ok(E[0].mine === 267.5 && E[0].others[0] === "Danish" && E[2].mine === 215 && E[3].mine === 0 && E[3].others[0] === "Danish" && E[4].income, "your share: half of a joint buy, all of an unsplit row, nothing when Danish paid; Sales is income");
+  ok(P.parseBizLedger([["a", "b"], [1, 2]]) === null, "a sheet without Ledger columns is refused");
+  const tx = [
+    { id: "f:0", date: "2026-10-10", post: "2026-10-10", raw: -215, cat: "Other", pair: null },
+    { id: "f:1", date: "2026-10-13", post: "2026-10-14", raw: -65.3, cat: "Subscriptions", pair: null },
+    { id: "f:2", date: "2026-08-15", post: "2026-08-15", raw: -267.5, cat: "People", pair: null },
+    { id: "f:3", date: "2026-07-01", post: "2026-07-01", raw: -89, cat: "Shopping", pair: null },
+    { id: "f:4", date: "2026-10-09", post: "2026-10-09", raw: -215, cat: "Transfers", pair: "g:0" },
+    { id: "f:5", date: "2026-10-30", post: "2026-10-30", raw: -65.3, cat: "Subscriptions", pair: null },
+  ];
+  let M = P.matchBusiness(rows, tx, {}, ["Bryan"]);
+  ok(M.byRow.get(6) === "f:0" && M.byRow.get(5) === "f:1" && M.byRow.get(4) === "f:2", "dated rows match the nearest payment within 5 days (not the paired transfer); undated row matches its one 267.50 payment: " + JSON.stringify([...M.byRow]));
+  ok(!M.byRow.has(7) && !M.byRow.has(8), "a row Danish paid and an income row match nothing");
+  M = P.matchBusiness(rows, tx.concat([{ id: "f:6", date: "2026-09-01", post: "2026-09-01", raw: -267.5, cat: "Other", pair: null }]), {}, ["Bryan"]);
+  ok(!M.byRow.has(4), "an undated row with two possible payments is left for a person to decide");
+  M = P.matchBusiness(rows, tx, { r4: "f:3", r6: "none" }, ["Bryan"]);
+  ok(M.byRow.get(4) === "f:3" && !M.byRow.has(6) && M.skipped.has(6) && M.byTx.get("f:3").r === 4, "links by hand win: a chosen payment and a skipped row");
+}
 // --- server: people, rule details, accounts, goals ---
 {
   const E = { DB, DEV_EMAIL: "bryan@example.com" };
@@ -88,6 +121,22 @@ ok(stored.length === 1 && stored[0][3] === "Other", "server drops malformed rows
   ok(data.budgets.All.Total === 1300 && data.budgets.All.Shopping === 300 && !("Hacker" in data.budgets.All), "monthly cap saved with limits");
   await call("PUT", "/api/files/" + f.id, { account: "POSB Savings" });
   ok((await (await call("GET", "/api/data")).json()).files.find(x => x.id === f.id).account === "POSB Savings", "account label can be renamed");
+  // business ledger: stored per owner, cleaned, links kept when only rows change
+  const bz = await (await call("PUT", "/api/business", { sheet: "1AbC-def_GhIJKLMNOPQRSTUVWXYZ0123456789abc/evil", name: "FloofMart\u0001 Sheet", rows: [{ r: 4, d: "2026-10-10", t: "Inventory", c: "Cards", a: "215", n: "Bulk — first part", w: [["You", 215]] }, { r: 5, d: "bad", t: "", c: "", a: 0, n: "" }, "junk", { r: 9, d: "", t: "Loss", a: -510, n: "<b>Scam</b>", w: [["You", "510"], [7, 1]] }], links: { r4: f.id + ":0", r9: "none", r1: "../etc", ["t" + f.id + ":2"]: 1, evil: 1 } })).json();
+  ok(bz.ok && bz.rows === 2, "ledger rows saved, blank and junk rows dropped");
+  await call("POST", "/api/rules", { set: { "PRICECHARTING": { c: "Subscriptions", tag: "biz" } } });
+  let d2 = await (await call("GET", "/api/data")).json();
+  ok(d2.business.sheet === "1AbC-def_GhIJKLMNOPQRSTUVWXYZ0123456789abcevil" && d2.business.name === "FloofMart Sheet" && d2.business.tab === "Ledger", "sheet id and name cleaned");
+  ok(d2.business.rows[1].a === 510 && d2.business.rows[1].w.length === 1 && d2.business.rows[0].a === 215, "amounts positive numbers, bad contributor dropped: " + JSON.stringify(d2.business.rows[1]));
+  ok(JSON.stringify(d2.business.links) === JSON.stringify({ r4: f.id + ":0", r9: "none", ["t" + f.id + ":2"]: 1 }), "only well-formed links kept: " + JSON.stringify(d2.business.links));
+  ok(d2.meta["PRICECHARTING"].tag === "biz", "a merchant rule can carry the business tag");
+  await call("PUT", "/api/business", { rows: [] });
+  d2 = await (await call("GET", "/api/data")).json();
+  ok(d2.business.rows.length === 0 && d2.business.links.r4 === f.id + ":0" && d2.business.sheet.startsWith("1AbC"), "updating rows alone keeps the sheet and the links");
+  const other = await (await worker.fetch(new Request("http://localhost/api/data"), { DB, DEV_EMAIL: "mum@example.com" }, {})).json();
+  ok(other.business === null, "the ledger is private to its owner");
+  await call("DELETE", "/api/business");
+  ok((await (await call("GET", "/api/data")).json()).business === null, "ledger can be removed");
 }
 // --- Google sign-in (runs last: it fills the family list) ---
 {

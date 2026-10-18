@@ -24,7 +24,7 @@ const soft = c => `color-mix(in srgb, ${catCol(c)} 16%, var(--surface))`;
 const svgI = (d, cls="i") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
 const catIcon = c => `<span class="ic" style="background:${soft(c)};color:${catCol(c)}">${svgI(IC[(CAT[c]||CAT.Other)[1]])}</span>`;
 
-const S = { me:{}, ai:false, files:[], family:[], famView:[], rules:{}, notes:{}, meta:{}, lookups:{}, budgets:{}, goals:[],
+const S = { me:{}, ai:false, files:[], family:[], famView:[], rules:{}, notes:{}, meta:{}, lookups:{}, budgets:{}, goals:[], biz:null,
   person:"All", month:null, tab:"home", sub:{spend:"cats",moves:"in",goals:"limits"}, by:"category", open:null, q:"",
   pending:[], upPerson:"", skipped:new Set(), looking:null, ex:null, showAll:{} };
 
@@ -206,6 +206,7 @@ async function loadData(){
   const d=await api("GET","/api/data");
   S.rules=d.rules||{}; S.notes=d.notes||{}; S.meta=d.meta||{}; S.lookups=d.lookups||{};
   S.budgets=d.budgets||{}; S.goals=Array.isArray(S.budgets.goals)?S.budgets.goals:[]; delete S.budgets.goals;
+  S.biz=d.business&&Array.isArray(d.business.rows)?{...d.business, links:d.business.links||{}}:null;
   S.files=(d.files||[]).filter(f=>f.mine).map(f=>({...f,mine:true}));
   S.family=(d.files||[]).filter(f=>!f.mine).map(f=>({...f,ro:true}));
   let changed=0;
@@ -251,6 +252,10 @@ function allTx(){
   }); });
   const pairs=pairTransfers(out.filter(t=>["Transfers","People","Income","Other"].includes(t.cat)));
   out.forEach(t=>{ t.pair=pairs.get(t.id)||null; });
+  // business: ledger rows matched to payments, plus payments marked as business by rule (tag) or by hand (links "t…")
+  const links=S.biz?S.biz.links:{};
+  BIZM=bizRows().length?matchBusiness(bizRows(),out,links,bizSelf()):{byTx:new Map(),byRow:new Map(),skipped:new Set()};
+  out.forEach(t=>{ t.biz=BIZM.byTx.get(t.id)||((t.tag==="biz"||links["t"+t.id])&&t.raw<0&&!t.pair?true:null); });
   TXC=out; return out;
 }
 const byPerson=tx=>S.person==="All"?tx:tx.filter(t=>t.person===S.person);
@@ -259,6 +264,7 @@ function months(tx){ return [...new Set(tx.map(t=>t.date.slice(0,7)))].sort(); }
 function mine(){ return byPerson(allTx()); }
 function scoped(){ return inMonth(mine()); }
 function kindOf(t){
+  if(t.biz) return "biz";
   if(t.pair||t.cat==="Transfers") return "own";
   if(t.cat==="Investing") return "invest";
   if(t.cat==="People") return "people";
@@ -267,15 +273,16 @@ function kindOf(t){
 }
 const isSpend=t=>kindOf(t)==="spend";
 function totals(tx){
-  const o={spend:0,inc:0,invIn:0,invOut:0,pplOut:0,pplIn:0,ownOut:0,ownIn:0,nOwn:0};
+  const o={spend:0,inc:0,invIn:0,invOut:0,pplOut:0,pplIn:0,ownOut:0,ownIn:0,nOwn:0,biz:0,nBiz:0};
   tx.forEach(t=>{ const k=kindOf(t);
     if(k==="spend"){ o.spend-=t.amt; if(t.share&&t.raw<0) o.pplOut+=t.amt-t.raw; }
+    else if(k==="biz"){ o.biz-=t.raw; o.nBiz++; }
     else if(k==="income") o.inc+=t.amt;
     else if(k==="invest"){ if(t.amt<0) o.invIn-=t.amt; else o.invOut+=t.amt; }
     else if(k==="people"){ if(t.amt<0) o.pplOut-=t.amt; else o.pplIn+=t.amt; }
     else { if(t.amt<0) o.ownOut-=t.amt; else o.ownIn+=t.amt; o.nOwn++; }
   });
-  o.inv=o.invIn-o.invOut; o.moneyIn=o.inc+o.pplIn; o.out=o.spend+Math.max(0,o.inv)+o.pplOut; o.left=o.moneyIn-o.spend-o.pplOut;
+  o.inv=o.invIn-o.invOut; o.moneyIn=o.inc+o.pplIn; o.out=o.spend+Math.max(0,o.inv)+o.pplOut+o.biz; o.left=o.moneyIn-o.spend-o.pplOut-o.biz;
   return o;
 }
 function spendByCat(tx){ const o={}; tx.filter(isSpend).forEach(t=>{ o[t.cat]=(o[t.cat]||0)-t.amt; }); for(const k in o) if(o[k]<=0.004) delete o[k]; return o; }
@@ -314,7 +321,7 @@ function niceName(k){ return k.replace(/^TRANSFER /,"Account ").replace(/\b(\d{3
 
 /* ---------- navigation ---------- */
 const TABS=[["home","Overview","i-home"],["spend","Spending","i-spend"],["moves","Money moves","i-moves"],["goals","Goals","i-goals"]];
-const SUBS={spend:[["cats","Categories"],["bills","Bills"],["sort","To sort"]], moves:[["in","Money in"],["accounts","Accounts"],["investing","Investing"],["people","People"]], goals:[["limits","Limits"],["goals","Goals"]]};
+const SUBS={spend:[["cats","Categories"],["bills","Bills"],["sort","To sort"]], moves:[["in","Money in"],["accounts","Accounts"],["investing","Investing"],["people","People"],["biz","Business"]], goals:[["limits","Limits"],["goals","Goals"]]};
 function go(tab, sub){ S.tab=tab; if(sub) S.sub[tab]=sub; const h="#"+tab+(SUBS[tab]?"/"+S.sub[tab]:""); if(location.hash!==h) history.replaceState(null,"",h); render(); window.scrollTo({top:0}); }
 function readHash(){ const [t,s]=location.hash.slice(1).split("/"); if(TABS.some(x=>x[0]===t)){ S.tab=t; if(s&&SUBS[t]&&SUBS[t].some(x=>x[0]===s)) S.sub[t]=s; } }
 window.addEventListener("hashchange",()=>{ readHash(); render(); });
@@ -358,7 +365,7 @@ function render(){
   const v=$("view");
   if(S.tab==="home") v.innerHTML=homeHTML();
   else if(S.tab==="spend") v.innerHTML=S.sub.spend==="cats"?catsHTML():S.sub.spend==="bills"?billsHTML():sortHTML();
-  else if(S.tab==="moves") v.innerHTML={in:moneyInHTML,accounts:accountsHTML,investing:investHTML,people:peopleHTML}[S.sub.moves]();
+  else if(S.tab==="moves") v.innerHTML={in:moneyInHTML,accounts:accountsHTML,investing:investHTML,people:peopleHTML,biz:bizHTML}[S.sub.moves]();
   else v.innerHTML=S.sub.goals==="limits"?limitsHTML():goalsHTML();
   bindView(v);
 }
@@ -371,8 +378,13 @@ function bindView(v){
   v.querySelectorAll("[data-by]").forEach(b=>b.onclick=()=>{ S.by=b.dataset.by; S.open=null; render(); });
   const q=v.querySelector("#q"); if(q){ q.oninput=()=>{ S.q=q.value; const box=$("qres"); if(box){ box.innerHTML=searchHTML(); bindView(box); } }; }
   const h={aiSort:()=>lookupGroups(sortGroups(false).slice(0,60)), aiTips:openTips, editLimits:()=>openLimits(false), suggestLimits:()=>openLimits(true), exportCsv:exportCsv, upload:()=>openUpload(),
-    famRefresh:async()=>{ try{ await loadData(); render(); toast("Family statements refreshed"); }catch(e){ toast("Couldn't refresh: "+e.message); } }};
+    famRefresh:async()=>{ try{ await loadData(); render(); toast("Family statements refreshed"); }catch(e){ toast("Couldn't refresh: "+e.message); } },
+    bizConnect:openBizConnect, bizRefresh:bizRefresh, bizExport:exportBizCsv};
   v.querySelectorAll("[data-act]").forEach(b=>b.onclick=()=>h[b.dataset.act]&&h[b.dataset.act]());
+  v.querySelectorAll("[data-blink]").forEach(b=>b.onclick=()=>openBizPick(+b.dataset.blink));
+  v.querySelectorAll("[data-bskip]").forEach(b=>b.onclick=()=>bizLink("r"+b.dataset.bskip,"none","Skipped. It won't be matched to your statements."));
+  v.querySelectorAll("[data-breset]").forEach(b=>b.onclick=()=>bizLink("r"+b.dataset.breset,null,"Back to automatic matching"));
+  v.querySelectorAll("[data-btx]").forEach(b=>b.onclick=()=>openBizRowPick(b.dataset.btx));
   v.querySelectorAll("[data-goal]").forEach(b=>b.onclick=()=>openGoal(b.dataset.goal));
   v.querySelectorAll("[data-newgoal]").forEach(b=>b.onclick=e=>{ e.stopPropagation(); openGoal(null,b.dataset.newgoal); });
   v.querySelectorAll("[data-whose]").forEach(b=>b.onclick=()=>whose(b.dataset.k,b.dataset.whose));
@@ -422,7 +434,7 @@ function homeHTML(){
   else if(U&&U.total>0){ const d=Math.round((T.spend/U.total-1)*100); facts.push(`<span class="fact ${d>5?"warn":"ok"}">${Math.abs(d)}% ${d>=0?"above":"below"} usual</span>`); }
   const max=Math.max(1,...byCat.map(x=>Math.max(x[1],U&&U.cats[x[0]]||0)));
   const cats=byCat.slice(0,7).map(([c,v])=>catBar(c,v,max,U?U.cats[c]||0:null,{tag:"button",attrs:`type="button" data-go="spend/cats" data-open="${esc(c)}"`})).join("");
-  const outParts=[["Spent",T.spend,"var(--out)"],["Invested",Math.max(0,T.inv),"var(--accent)"],["To people",T.pplOut,"var(--people)"]].filter(x=>x[1]>0.004);
+  const outParts=[["Spent",T.spend,"var(--out)"],["Invested",Math.max(0,T.inv),"var(--accent)"],["To people",T.pplOut,"var(--people)"],["Business",T.biz,"var(--biz)"]].filter(x=>x[1]>0.004);
   const outTot=outParts.reduce((s,x)=>s+x[1],0);
   const bills=upcoming().slice(0,3);
   const all=mine(); const allMs=months(all); const ms=allMs.slice(-6); const inv=ms.map(x=>({m:x,v:Math.max(0,totals(inMonth(all,x)).inv)})); const invMax=Math.max(1,...inv.map(x=>x.v));
@@ -433,7 +445,8 @@ function homeHTML(){
   const right=`<div class="card"><div class="row between"><h2>Money out</h2><span class="mono">${money(outTot)}</span></div>
       <div class="stackbar" role="img" aria-label="${outParts.map(x=>x[0]+" "+money(x[1])).join(", ")}">${outParts.map(x=>`<i style="width:${(x[1]/Math.max(1,outTot)*100).toFixed(1)}%;background:${x[2]}"></i>`).join("")}</div>
       <div class="leg">${outParts.map(x=>`<div><span><i style="background:${x[2]}"></i>${x[0]}</span><span>${money(x[1])}</span></div>`).join("")||`<p class="small muted">Nothing went out.</p>`}</div>
-      ${T.nOwn?`<button class="link" type="button" data-go="moves/accounts">${money(Math.max(T.ownIn,T.ownOut))} moved between your accounts · not counted</button>`:""}</div>
+      ${T.nOwn?`<button class="link" type="button" data-go="moves/accounts">${money(Math.max(T.ownIn,T.ownOut))} moved between your accounts · not counted</button>`:""}
+      ${T.biz>0.004?`<button class="link" type="button" data-go="moves/biz">${money(T.biz)} of FloofMart costs · kept out of family spending</button>`:""}</div>
     <button class="cardlink" type="button" data-go="moves/in"><span><span class="label">Money in</span><br><b class="mono" style="font-size:22px;color:var(--in)">${money(T.moneyIn)}</b></span><span style="text-align:right"><span class="label">Left over</span><br><b class="mono" style="font-size:22px;${T.left<0?"color:var(--out-ink)":""}">${T.left<0?"−":""}${money(Math.abs(T.left))}</b></span></button>
     ${bills.length?`<div class="card"><div class="row between"><h2>Coming up</h2><button class="link" type="button" data-go="spend/bills">All bills</button></div>${bills.map(b=>`<div class="bill">${calIcon(b.next)}<span class="nm">${esc(niceName(b.k))}</span><span class="a">${fmt(b.avg)}</span></div>`).join("")}</div>`:""}
     ${invTot>0?`<button class="cardlink" type="button" data-go="moves/investing"><span><span class="label">Invested since ${monthLabel(allMs[0])}</span><br><b class="mono" style="font-size:22px">${money(invTot)}</b></span><span class="minibars" aria-hidden="true">${inv.map(x=>`<span><i style="height:${Math.max(3,Math.round(x.v/invMax*34))}px"></i>${monthLabel(x.m)[0]}</span>`).join("")}</span></button>`:""}
@@ -519,8 +532,9 @@ document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeSheets(); });
 const closeBtn=`<button class="iconbtn ghost" type="button" data-x aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button>`;
 
 /* ---------- Identify sheet ---------- */
-const KINDS=[["purchase","Purchase","Counts as spending."],["split","Split bill","Only your share counts as spending."],["friend","Paid / paid back a friend","Shown under People, not spending."],["own","My other account","Not counted. Money just moved."],["family","Family","Shown under People with a Family tag."],["refund","Refund or income","Counts as money in."]];
-function kindFrom(cat,tag,share){ if(share) return "split"; if(cat==="People") return tag==="family"?"family":"friend"; if(cat==="Transfers") return "own"; if(cat==="Income") return tag==="family"?"family":"refund"; return "purchase"; }
+const KINDS=[["purchase","Purchase","Counts as spending."],["split","Split bill","Only your share counts as spending."],["business","FloofMart","A business cost. Kept out of family spending, shown under Money moves › Business."],["friend","Paid / paid back a friend","Shown under People, not spending."],["own","My other account","Not counted. Money just moved."],["family","Family","Shown under People with a Family tag."],["refund","Refund or income","Counts as money in."]];
+function kindFrom(cat,tag,share,bizOne){ if(share) return "split"; if(tag==="biz"||bizOne) return "business"; if(cat==="People") return tag==="family"?"family":"friend"; if(cat==="Transfers") return "own"; if(cat==="Income") return tag==="family"?"family":"refund"; return "purchase"; }
+function txIdOf({t,f}){ return f.id+":"+f.tx.indexOf(t); }
 function groupFor(k){ const items=[]; S.files.forEach(f=>f.tx.forEach(t=>{ if(merchantKey(t[1])===k) items.push({t,f}); })); return items; }
 function openIdentifyKey(k, queue){ const items=groupFor(k); if(!items.length){ toast(isExample()?"This is example data. Add your own statements to sort them.":"That one is from a family member's shared statement. They can change it."); return; } sheetIdentify(k, items, null, queue); }
 function openIdentifyTx(t){
@@ -530,7 +544,7 @@ function openIdentifyTx(t){
 function hintHTML(l){ return l&&l.what?`<div class="hint"><svg class="i"><use href="#i-search"/></svg><span>${esc(l.what)}${l.category&&CATS.includes(l.category)?` · looks like <b>${esc(catName(l.category))}</b>`:""}</span></div>`:""; }
 function sheetIdentify(k, items, focus, queue){
   const meta=S.meta[k]||{}; const t0=(focus||items[0]).t;
-  const st={kind:kindFrom(t0[3],meta.tag,t0[5]||meta.share), cat:NON_SPEND.has(t0[3])||t0[3]==="Other"?"Shopping":t0[3], scope:focus?"one":"always", share:t0[5]||meta.share||"", note:S.notes[k]||""};
+  const st={kind:kindFrom(t0[3],meta.tag,t0[5]||meta.share,!!(S.biz&&S.biz.links["t"+txIdOf(focus||items[0])])), cat:NON_SPEND.has(t0[3])||t0[3]==="Other"?"Shopping":t0[3], scope:focus?"one":"always", share:t0[5]||meta.share||"", note:S.notes[k]||""};
   const lk=S.lookups[k]; if(t0[3]==="Other"&&lk&&CATS.includes(lk.category)&&!NON_SPEND.has(lk.category)&&lk.category!=="Other") st.cat=lk.category;
   const outT=items.reduce((s,{t})=>s+(t[2]<0?-t[2]:0),0), inT=items.reduce((s,{t})=>s+(t[2]>0?t[2]:0),0);
   const pd=parseDesc(t0[1]);
@@ -549,7 +563,7 @@ function sheetIdentify(k, items, focus, queue){
     sc.querySelector("#idKinds").innerHTML=KINDS.map(([id,l])=>`<button class="chip" type="button" data-k="${id}" aria-pressed="${st.kind===id}">${l}</button>`).join("");
     sc.querySelector("#idKindHelp").textContent=KINDS.find(x=>x[0]===st.kind)[2];
     sc.querySelector("#idShareBox").hidden=st.kind!=="split";
-    sc.querySelector("#idCatBox").hidden=!(st.kind==="purchase"||st.kind==="split");
+    sc.querySelector("#idCatBox").hidden=!(st.kind==="purchase"||st.kind==="split"||st.kind==="business");
     sc.querySelector("#idCats").innerHTML=SPEND_CATS.map(c=>`<button class="chip" type="button" data-c="${esc(c)}" aria-pressed="${st.cat===c}">${esc(catName(c))}</button>`).join("");
     sc.querySelectorAll("#idKinds [data-k]").forEach(b=>b.onclick=()=>{ st.kind=b.dataset.k; paint(); });
     sc.querySelectorAll("#idCats [data-c]").forEach(b=>b.onclick=()=>{ st.cat=b.dataset.c; paint(); });
@@ -566,18 +580,21 @@ function sheetIdentify(k, items, focus, queue){
   };
 }
 function applyIdentify(k, items, focus, st){
-  const c={purchase:st.cat, split:st.cat, friend:"People", own:"Transfers", family:"People", refund:"Income"}[st.kind];
-  const tag=st.kind==="family"?"family":st.kind==="own"?"own":""; const share=st.kind==="split"?st.share:"";
-  const touched=new Set();
-  const setT=({t,f})=>{ t[3]=c; t.length=4; if(share&&st.scope!=="always"){ t[4]=0; t[5]=share; } touched.add(f); };
+  const c={purchase:st.cat, split:st.cat, business:st.cat, friend:"People", own:"Transfers", family:"People", refund:"Income"}[st.kind];
+  const tag=st.kind==="family"?"family":st.kind==="own"?"own":st.kind==="business"?"biz":""; const share=st.kind==="split"?st.share:"";
+  const touched=new Set(); const hand={};
+  const setT=(it)=>{ const {t,f}=it; t[3]=c; t.length=4; if(share&&st.scope!=="always"){ t[4]=0; t[5]=share; } touched.add(f);
+    // business for just this one (or these) without a rule: remembered per payment; any other choice clears that mark
+    const id="t"+txIdOf(it); if(st.kind==="business"&&st.scope!=="always") hand[id]=1; else if(S.biz&&S.biz.links[id]) hand[id]=null; };
   if(st.scope==="one"&&focus) setT(focus); else items.forEach(setT);
+  if(Object.keys(hand).length) bizLinks(hand);
   if(st.scope==="always"){
     setRules({[k]:{c, note:st.note, share, tag}});
     if(st.note) S.notes[k]=st.note; else delete S.notes[k];
     if(share||tag) S.meta[k]={share,tag}; else delete S.meta[k];
   }
   S.skipped.delete(k); touched.forEach(saveFile); invalidate();
-  toast(`${niceName(k)} → ${st.kind==="purchase"||st.kind==="split"?catName(c):KINDS.find(x=>x[0]===st.kind)[1]}`);
+  toast(`${niceName(k)} → ${st.kind==="purchase"||st.kind==="split"?catName(c):st.kind==="business"?`FloofMart (${catName(c)})`:KINDS.find(x=>x[0]===st.kind)[1]}`);
 }
 function cleanExample(t){ return parseDesc(t[1]).raw.replace(/\d{4}-\d{4}-\d{4}-\d{4}/g,"").replace(/\b\d{6,}\b/g,"").replace(/\s+/g," ").trim().slice(0,90); }
 async function lookupGroups(groups, quiet){
@@ -603,14 +620,14 @@ function moneyInHTML(){
   const tx=scoped(); const T=totals(tx);
   const src={}; tx.forEach(t=>{ const k=kindOf(t); if(t.amt>0&&(k==="income"||k==="people")){ const o=src[t.key]=src[t.key]||{k:t.key,v:0,n:0,cat:t.cat,tag:t.tag}; o.v+=t.amt; o.n++; } });
   const list=Object.values(src).sort((a,b)=>b.v-a.v); const max=Math.max(1,...list.map(x=>x.v));
-  const all=mine(); const ms=months(all).slice(-12); const data=ms.map(m=>{ const o=totals(inMonth(all,m)); return {m,inn:o.moneyIn,out:o.spend+o.pplOut}; });
+  const all=mine(); const ms=months(all).slice(-12); const data=ms.map(m=>{ const o=totals(inMonth(all,m)); return {m,inn:o.moneyIn,out:o.spend+o.pplOut+o.biz}; });
   const rate=T.moneyIn?Math.round(T.left/T.moneyIn*100):null;
   return `<div class="grid two"><div class="stack"><div class="card"><div class="row between"><span><span class="label">Money in · ${S.month==="all"?"all time":monthLabel(S.month,1)}</span><br><span class="big" style="color:var(--in)">${money(T.moneyIn)}</span></span>
       <span style="text-align:right"><span class="label">Kept</span><br><span class="big" style="font-size:22px">${rate==null?"–":rate+"%"}</span></span></div>
       ${list.slice(0,12).map(x=>`<button class="cbar" type="button" data-key="${esc(x.k)}">${catIcon(x.cat)}<span style="min-width:0"><span class="nm">${esc(niceName(x.k))}${x.tag==="family"?` <span class="pill ok">Family</span>`:""} <span class="tiny muted">×${x.n}</span></span><span class="track"><b style="width:${(x.v/max*100).toFixed(1)}%;background:var(--in)"></b></span></span><span class="amt">${money(x.v)}</span></button>`).join("")||`<p class="small muted">No money in this period.</p>`}
       <span class="tiny muted">Counts pay, allowances, interest and money from people. Transfers from your own accounts and investment withdrawals aren't counted. "Kept" is money in minus spending and money to people.</span></div></div>
     <div class="stack"><div class="card"><div class="row between"><h2>Money in vs money out</h2><span class="legend"><span><i style="background:var(--in)"></i>In</span><span><i style="background:var(--out)"></i>Out</span></span></div>
-      ${data.length?inOutChart(data):`<p class="small muted">No data yet.</p>`}<span class="tiny muted">Out = spending + money to people. Investing is shown separately. The number under each month is what was left over.</span></div></div></div>`;
+      ${data.length?inOutChart(data):`<p class="small muted">No data yet.</p>`}<span class="tiny muted">Out = spending + money to people + business costs. Investing is shown separately. The number under each month is what was left over.</span></div></div></div>`;
 }
 function acctDigits(a){ return String(a||"").replace(/\D/g,""); }
 function accountsHTML(){
@@ -629,7 +646,7 @@ function accountsHTML(){
   const asks={}; all.filter(t=>t.unsure&&(t.cat==="People"||t.cat==="Transfers")&&!t.ro&&!t.file.example).forEach(t=>{ const o=asks[t.key]=asks[t.key]||{k:t.key,n:0,v:0}; o.n++; o.v+=t.amt; });
   const askList=Object.values(asks).sort((a,b)=>Math.abs(b.v)-Math.abs(a.v)).slice(0,5);
   const T=totals(inMonth(all,S.month));
-  const outs=[["Spending",T.spend,"var(--out)"],["Investing",Math.max(0,T.inv),"var(--accent)"],["People",T.pplOut,"var(--people)"],["Own accounts",T.ownOut,"var(--grey)"]].filter(x=>x[1]>0.004); const om=Math.max(1,...outs.map(x=>x[1]));
+  const outs=[["Spending",T.spend,"var(--out)"],["Business",T.biz,"var(--biz)"],["Investing",Math.max(0,T.inv),"var(--accent)"],["People",T.pplOut,"var(--people)"],["Own accounts",T.ownOut,"var(--grey)"]].filter(x=>x[1]>0.004); const om=Math.max(1,...outs.map(x=>x[1]));
   return `<div class="grid two"><div class="stack">
     <div class="card"><div class="row between"><h2>Your accounts</h2><button class="btn ghost sm" type="button" data-act="upload">Add</button></div>${cards.join("")||`<p class="small muted">No statements yet.</p>`}
       ${miss.length?`<span class="label" style="margin-top:4px">Transfers point to these</span>${miss.join("")}<span class="tiny muted">Add their statements so money moving between them nets out.</span>`:""}
@@ -688,6 +705,148 @@ function peopleHTML(){
     ${list.slice(0,S.showAll.ppl?999:20).map(x=>`<button class="duo" type="button" data-key="${esc(x.k)}"><span class="nm"><b>${esc(niceName(x.k))}</b>${x.tag==="family"?`<span>FAMILY</span>`:x.split?`<span>SPLIT BILL</span>`:""}</span><span class="bars">${x.s?`<i style="width:${Math.max(3,x.s/max*100).toFixed(1)}%;background:var(--people)"></i>`:""}${x.g?`<i style="width:${Math.max(3,x.g/max*100).toFixed(1)}%;background:var(--in)"></i>`:""}</span><span class="n" style="${x.g>x.s?"color:var(--in)":""}">${x.g-x.s>=0?"+":"−"}${money(Math.abs(x.g-x.s))}</span></button>`).join("")||`<p class="small muted">No money to or from people in this period.</p>`}
     ${list.length>20&&!S.showAll.ppl?`<button class="link" type="button" data-more="ppl">Show all ${list.length}</button>`:""}
     <span class="tiny muted">Tap a person to mark a split bill, a purchase, or family. Received from family counts as money in.</span></div>`;
+}
+
+/* ---------- Money moves › Business (FloofMart's Ledger) ---------- */
+let BIZM={byTx:new Map(),byRow:new Map(),skipped:new Set()};
+function bizRows(){ return S.biz&&Array.isArray(S.biz.rows)?S.biz.rows:[]; }
+function bizSelf(){ return [S.me.name,...new Set(S.files.map(f=>f.person))].filter(Boolean); }
+function bizPeriod(d){ return S.month==="all"||(!!d&&d.startsWith(S.month)); }
+const SHEETS_SCOPE="https://www.googleapis.com/auth/spreadsheets.readonly";
+function bizInfo(all){
+  const txById=new Map(all.map(t=>[t.id,t])); const links=S.biz?S.biz.links:{};
+  return bizRows().map(r=>{ const E=bizExpense(r,bizSelf()); const txId=BIZM.byRow.get(r.r); const t=txId?txById.get(txId):null;
+    return {r,E,t,date:t?t.date:r.d,skipped:BIZM.skipped.has(r.r),manual:!!links["r"+r.r]&&links["r"+r.r]!=="none"}; });
+}
+function bizRowHTML(x, acts){
+  return `<div class="lrow"><span class="d"><b>${esc(x.r.n||x.r.t)}</b><span class="s">${x.r.d?dayMon(x.r.d):"undated"} · ${esc(x.r.t)}${x.r.c?" · "+esc(x.r.c):""}${x.E.others.length?` · with ${esc(x.E.others.join(", "))}`:""}${x.t?` · <b style="font-size:12px">${esc(niceName(x.t.key))}</b> ${dayMon(x.t.date)}${x.manual?" (linked by you)":""}`:""}</span></span>
+    <span class="a">${fmt(x.E.mine)}${Math.abs(x.E.mine-x.r.a)>0.004?`<br><span class="tiny muted" style="font-weight:400">of ${fmt(x.r.a)}</span>`:""}</span>${acts?`<span class="acts">${acts}</span>`:""}</div>`;
+}
+function bizHTML(){
+  const all=allTx();
+  if(!S.biz||!bizRows().length){
+    return `<div class="grid two"><div class="stack"><div class="card"><h2>FloofMart costs</h2>
+      <p class="small">Connect FloofMart's Google Sheet and this page matches every row of its <b>Ledger</b> tab (inventory, overheads, losses, equipment) to a payment in your bank statements. Matched payments are kept out of family spending and totalled here.</p>
+      <div class="row"><button class="btn" type="button" data-act="bizConnect">Connect the Ledger</button></div>
+      <span class="tiny muted">Read-only. Rows where someone else paid (contributors) only count your share. You can also mark any payment as FloofMart from "What was this?".</span></div></div>
+      <div class="stack"><div class="card flat"><b>How matching works</b><p class="small muted">Same amount as your share, within ${BIZ_DAYS} days of the Ledger date. Undated rows match only when exactly one payment of that amount exists. Anything left over you can link by hand.</p></div></div></div>`;
+  }
+  const info=bizInfo(all); const inP=info.filter(x=>!x.E.income&&bizPeriod(x.date));
+  const matched=inP.filter(x=>x.t), missing=inP.filter(x=>!x.t&&!x.skipped&&x.E.mine>0), others=inP.filter(x=>!x.t&&!x.skipped&&x.E.mine<=0), skipped=inP.filter(x=>x.skipped&&!x.t);
+  const undated=S.month!=="all"?info.filter(x=>!x.r.d&&!x.t&&!x.E.income).length:0;
+  const bizTx=inMonth(byPerson(all)).filter(t=>t.biz).sort((a,b)=>b.date.localeCompare(a.date)); const bank=bizTx.reduce((s,t)=>s-t.raw,0);
+  const extra=bizTx.filter(t=>t.biz===true);
+  const ledgerTot=inP.reduce((s,x)=>s+x.r.a,0), mineTot=inP.reduce((s,x)=>s+x.E.mine,0);
+  const byType={}; bizTx.forEach(t=>{ const k=t.biz===true?"Not in the Ledger":t.biz.t; byType[k]=(byType[k]||0)-t.raw; });
+  const types=Object.entries(byType).sort((a,b)=>b[1]-a[1]); const tmax=Math.max(1,...types.map(x=>x[1]));
+  const when=S.biz.updated?new Date(S.biz.updated).toLocaleDateString("en-SG",{day:"numeric",month:"short"}):"";
+  const per=S.month==="all"?"all time":monthLabel(S.month,1);
+  const more=(key,list,n=8)=>list.length>n&&!S.showAll[key]?`<button class="link" type="button" data-more="${key}">Show all ${list.length}</button>`:"";
+  const cut=(key,list,n=8)=>S.showAll[key]?list:list.slice(0,n);
+  const left=`<div class="card"><div class="row between"><span><span class="label">FloofMart costs · ${per}</span><br><span class="big" style="color:var(--biz)">${money(bank)}</span><br><span class="small muted">paid from your accounts · ${bizTx.length} payment${bizTx.length===1?"":"s"}</span></span>
+      <span style="text-align:right"><span class="label">Ledger says</span><br><span class="big" style="font-size:22px">${money(mineTot)}</span><br><span class="small muted">your share${Math.abs(mineTot-ledgerTot)>0.004?` of ${money(ledgerTot)}`:""}</span></span></div>
+      <div class="chips"><span class="pill ok">${matched.length} matched</span>${missing.length?`<span class="pill warn">${missing.length} not found</span>`:""}${extra.length?`<span class="pill biz">${extra.length} not in Ledger</span>`:""}${others.length?`<span class="pill">${others.length} paid by others</span>`:""}</div>
+      <div class="row"><button class="btn sm" type="button" data-act="${S.biz.sheet?"bizRefresh":"bizConnect"}">${S.biz.sheet?"Refresh from Sheet":"Update the Ledger"}</button><button class="btn ghost sm" type="button" data-act="bizConnect">Settings</button><button class="btn ghost sm" type="button" data-act="bizExport">Export CSV</button></div>
+      <span class="tiny muted">${esc(S.biz.name||"Ledger")}${S.biz.tab&&S.biz.tab!=="Ledger"?" › "+esc(S.biz.tab):""} · ${bizRows().length} rows${when?` · updated ${when}`:""}.${undated?` ${undated} undated row${undated===1?"":"s"} only show under All time.`:""}</span></div>
+    <div class="card"><div class="row between"><h2>By type</h2><span class="small muted">${per}</span></div>
+      ${types.map(([k,v])=>`<div class="repeat"><span class="nm"><b>${esc(k)}</b></span><span class="hbar"><i style="width:${Math.max(2,v/tmax*100).toFixed(1)}%;background:var(--biz)"></i></span><span class="mono">${money(v)}</span></div>`).join("")||`<p class="small muted">No FloofMart payments in this period.</p>`}
+      <span class="tiny muted">Inventory is stock bought. FloofMart's own P&amp;L counts it as the cards sell; here it's money that left the family's accounts.</span></div>
+    ${matched.length?`<div class="card"><div class="row between"><h2>Matched</h2><span class="mono">${money(matched.reduce((s,x)=>s-x.t.raw,0))}</span></div>${cut("bzm",matched.slice().sort((a,b)=>b.date.localeCompare(a.date))).map(x=>bizRowHTML(x,`<button class="btn ghost sm" type="button" data-tx="${esc(x.t.id)}">Payment</button><button class="btn ghost sm" type="button" data-bskip="${x.r.r}">Unlink</button>`)).join("")}${more("bzm",matched)}</div>`:""}`;
+  const right=`${missing.length?`<div class="card"><div class="row between"><h2>Not found in your statements</h2><span class="mono">${money(missing.reduce((s,x)=>s+x.E.mine,0))}</span></div>
+      <p class="small muted">Paid in cash, from an account you haven't added, or the amount or date differs. Find the payment, or skip it.</p>
+      ${cut("bzx",missing).map(x=>bizRowHTML(x,`<button class="btn sm" type="button" data-blink="${x.r.r}">Find payment</button><button class="btn ghost sm" type="button" data-bskip="${x.r.r}">Skip</button>`)).join("")}${more("bzx",missing)}</div>`:""}
+    ${extra.length?`<div class="card"><div class="row between"><h2>In your bank, not in the Ledger</h2><span class="mono">${money(extra.reduce((s,t)=>s-t.raw,0))}</span></div>
+      <p class="small muted">Marked as FloofMart but no Ledger row matches. Add them to the Sheet, or link one to a row.</p>
+      ${cut("bze",extra).map(t=>`<div class="lrow"><span class="d"><b>${esc(niceName(t.key))}</b><span class="s">${dayMon(t.date)} · ${esc(t.person)} · ${esc(catName(t.cat))}</span></span><span class="a">${fmt(-t.raw)}</span><span class="acts"><button class="btn ghost sm" type="button" data-btx="${esc(t.id)}">Link to a Ledger row</button><button class="btn ghost sm" type="button" data-tx="${esc(t.id)}">Not FloofMart</button></span></div>`).join("")}${more("bze",extra)}</div>`:""}
+    ${others.length?`<div class="card"><h2>Paid by someone else</h2><p class="small muted">Your share is zero, so nothing is expected in your statements.</p>${cut("bzo",others,5).map(x=>bizRowHTML(x)).join("")}${more("bzo",others,5)}</div>`:""}
+    ${skipped.length?`<div class="card"><h2>Skipped</h2>${cut("bzs",skipped,5).map(x=>bizRowHTML(x,`<button class="btn ghost sm" type="button" data-blink="${x.r.r}">Find payment</button><button class="btn ghost sm" type="button" data-breset="${x.r.r}">Match again</button>`)).join("")}${more("bzs",skipped,5)}</div>`:""}
+    ${!missing.length&&!extra.length&&!others.length&&!skipped.length?`<div class="card"><p class="small"><b>Everything in the Ledger for ${per} is accounted for.</b></p></div>`:""}`;
+  return `<div class="grid two"><div class="stack">${left}</div><div class="stack">${right}</div></div>`;
+}
+async function bizSave(patch){
+  if(!S.biz) S.biz={sheet:"",name:"",tab:"Ledger",rows:[],links:{},updated:0};
+  Object.assign(S.biz,patch); invalidate();
+  try{ await api("PUT","/api/business",patch); setSave("Saved"); }catch(e){ setSave("Couldn't save: "+e.message); toast("Couldn't save: "+e.message); }
+}
+function bizLinks(map){ if(!S.biz) S.biz={sheet:"",name:"",tab:"Ledger",rows:[],links:{},updated:0}; for(const [k,v] of Object.entries(map)){ if(v==null) delete S.biz.links[k]; else S.biz.links[k]=v; } return bizSave({links:S.biz.links}); }
+async function bizLink(key, val, msg){ await bizLinks({[key]:val}); render(); if(msg) toast(msg); }
+function bizImport(rows, meta){
+  const parsed=parseBizLedger(rows);
+  if(!parsed) throw new Error("Couldn't find the Ledger columns (date, type, category, amount, notes, contributors). Check the tab name or file.");
+  if(!parsed.length) throw new Error("The Ledger has no rows yet.");
+  return bizSave({...meta, rows:parsed, updated:Date.now()}).then(()=>{ closeSheets(); go("moves","biz"); const n=BIZM.byRow.size; toast(`${parsed.length} Ledger rows · ${n} matched to your statements`); });
+}
+function sheetIdFrom(v){ const s=String(v||"").trim(); const m=s.match(/\/d\/([A-Za-z0-9_-]{20,})/); return m?m[1]:(/^[A-Za-z0-9_-]{20,}$/.test(s)?s:""); }
+async function bizFetchSheet(id, tab){
+  const tok=await googleToken(SHEETS_SCOPE);
+  const get=async(path)=>{ const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${id}${path}`,{headers:{authorization:"Bearer "+tok}});
+    if(r.status===403){ const j=await r.json().catch(()=>({})); const m=String(j.error&&j.error.message||""); throw new Error(/not been used|disabled|SERVICE_DISABLED/i.test(m)?"Turn on the Google Sheets API in the Google Cloud project that holds the sign-in client, then try again.":"Google refused: you need view access to that Sheet."); }
+    if(r.status===404) throw new Error("Sheet or tab not found. Check the link and the tab name.");
+    if(!r.ok) throw new Error("Google Sheets error "+r.status);
+    return r.json(); };
+  const [meta,vals]=await Promise.all([get("?fields=properties.title"), get(`/values/${encodeURIComponent("'"+tab.replace(/'/g,"''")+"'")}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`)]);
+  return {name:meta.properties&&meta.properties.title||"", rows:vals.values||[]};
+}
+async function bizRefresh(){
+  if(!S.biz||!S.biz.sheet){ openBizConnect(); return; }
+  toast("Reading the Sheet…");
+  try{ const r=await bizFetchSheet(S.biz.sheet,S.biz.tab||"Ledger"); await bizImport(r.rows,{sheet:S.biz.sheet,tab:S.biz.tab||"Ledger",name:r.name}); }
+  catch(e){ toast(e.message); }
+}
+function openBizConnect(){
+  const sc=sheet(`<div class="row between"><h1 style="font-size:24px">FloofMart's Ledger</h1>${closeBtn}</div>
+    <p class="small muted">Reads the <b>Ledger</b> tab of FloofMart's Google Sheet (view only, nothing is written back) and matches each cost to a payment in your statements.</p>
+    <label class="f">Google Sheet link<input type="text" id="bzUrl" placeholder="https://docs.google.com/spreadsheets/d/…" value="${esc(S.biz&&S.biz.sheet?"https://docs.google.com/spreadsheets/d/"+S.biz.sheet:"")}"></label>
+    <label class="f">Tab name<input type="text" id="bzTab" value="${esc(S.biz&&S.biz.tab||"Ledger")}" maxlength="40"></label>
+    <button class="btn" type="button" id="bzGo">${S.biz&&S.biz.sheet?"Reconnect and import":"Connect and import"}</button>
+    <p class="tiny muted">Google will ask you to let this site view your spreadsheets. One-time setup: in the Google Cloud project with the sign-in client, enable the <b>Google Sheets API</b>.</p>
+    <div class="row between" style="margin-top:4px"><span class="small" style="font-weight:700">Or upload an export of the tab</span><label class="btn ghost sm" for="bizIn">Choose file</label></div>
+    <p class="tiny muted">In the Sheet: File › Download › CSV (current tab). Columns: date, type, category, amount, notes, contributors, amount spent by each.</p>
+    ${S.biz?`<button class="link" type="button" id="bzOff" style="color:var(--out-ink);align-self:flex-start">Remove the Ledger and all links</button>`:""}
+    <div id="bzMsg" role="status" class="small muted"></div>`,"FloofMart's Ledger");
+  const msg=t=>{ const m=sc.querySelector("#bzMsg"); if(m) m.textContent=t; };
+  sc.querySelector("#bzGo").onclick=async()=>{
+    const id=sheetIdFrom(sc.querySelector("#bzUrl").value), tab=sc.querySelector("#bzTab").value.trim()||"Ledger";
+    if(!id){ msg("Paste the Sheet's link (it has /spreadsheets/d/… in it)."); return; }
+    const b=sc.querySelector("#bzGo"); b.disabled=true; msg("Asking Google…");
+    try{ const r=await bizFetchSheet(id,tab); msg(`Read ${r.rows.length} rows…`); await bizImport(r.rows,{sheet:id,tab,name:r.name}); }
+    catch(e){ msg(e.message); b.disabled=false; }
+  };
+  const off=sc.querySelector("#bzOff"); if(off) off.onclick=async()=>{ if(!off.dataset.armed){ off.dataset.armed=1; off.textContent="Tap again to remove"; return; }
+    try{ await api("DELETE","/api/business"); S.biz=null; invalidate(); sc.remove(); render(); toast("Ledger removed"); }catch(e){ msg(e.message); } };
+}
+$("bizIn").onchange=async e=>{ const f=e.target.files[0]; e.target.value=""; if(!f) return;
+  try{ const rows=await readSheet(f); await bizImport(rows,{sheet:"",tab:"Ledger",name:f.name}); }catch(err){ toast(err.message||"Couldn't read that file"); } };
+// pick the payment for a Ledger row
+function openBizPick(rowNo){
+  const row=bizRows().find(r=>r.r===rowNo); if(!row) return; const E=bizExpense(row,bizSelf()); const want=E.mine||row.a;
+  const used=new Set(BIZM.byTx.keys());
+  const list=allTx().filter(t=>t.raw<0&&!t.pair&&!used.has(t.id)).map(t=>({t,da:Math.abs(-t.raw-want),dd:row.d?Math.abs(Date.parse(t.date)-Date.parse(row.d))/864e5:0}))
+    .sort((a,b)=>a.da-b.da||a.dd-b.dd||b.t.date.localeCompare(a.t.date)).slice(0,15);
+  const sc=sheet(`<div class="row between"><b>Which payment was this?</b>${closeBtn}</div>
+    <div class="lines"><span>${esc(row.n||row.t)}</span><span>${fmt(want)}</span><span>${row.d?dayMon(row.d):"undated"} · ${esc(row.t)}${E.others.length?` · with ${esc(E.others.join(", "))}`:""}</span><span></span></div>
+    <div class="stack" style="gap:6px">${list.map(({t,da})=>`<button class="pick" type="button" data-pick="${esc(t.id)}"><b>${esc(niceName(t.key))}</b><span class="s">${dayMon(t.date)} · ${esc(t.person)} · ${esc(catName(t.cat))}${t.biz?" · already FloofMart":""}</span><span class="a" style="${da>0.004?"color:var(--muted)":""}">${fmt(-t.raw)}</span></button>`).join("")||`<p class="small muted">No payments to choose from yet.</p>`}</div>
+    <div class="row"><button class="btn ghost sm" type="button" data-none>Not in my statements</button></div>`,"Which payment was this?");
+  sc.querySelectorAll("[data-pick]").forEach(b=>b.onclick=()=>{ sc.remove(); bizLink("r"+rowNo,b.dataset.pick,"Linked"); });
+  sc.querySelector("[data-none]").onclick=()=>{ sc.remove(); bizLink("r"+rowNo,"none","Skipped"); };
+}
+// pick the Ledger row for a payment
+function openBizRowPick(txId){
+  const t=allTx().find(x=>x.id===txId); if(!t) return;
+  const list=bizInfo(allTx()).filter(x=>!x.t&&!x.E.income).map(x=>({x,da:Math.abs(x.E.mine-(-t.raw)),dd:x.r.d?Math.abs(Date.parse(t.date)-Date.parse(x.r.d))/864e5:0}))
+    .sort((a,b)=>a.da-b.da||a.dd-b.dd).slice(0,15);
+  const sc=sheet(`<div class="row between"><b>Which Ledger row is this?</b>${closeBtn}</div>
+    <div class="lines"><span>${esc(niceName(t.key))}</span><span>${fmt(-t.raw)}</span><span>${dayMon(t.date)} · ${esc(t.person)}</span><span></span></div>
+    <div class="stack" style="gap:6px">${list.map(({x,da})=>`<button class="pick" type="button" data-pick="${x.r.r}"><b>${esc(x.r.n||x.r.t)}</b><span class="s">${x.r.d?dayMon(x.r.d):"undated"} · ${esc(x.r.t)}${x.r.c?" · "+esc(x.r.c):""}${x.skipped?" · skipped":""}</span><span class="a" style="${da>0.004?"color:var(--muted)":""}">${fmt(x.E.mine)}</span></button>`).join("")||`<p class="small muted">Every Ledger row is already matched.</p>`}</div>`,"Which Ledger row is this?");
+  sc.querySelectorAll("[data-pick]").forEach(b=>b.onclick=()=>{ sc.remove(); bizLink("r"+b.dataset.pick,txId,"Linked"); });
+}
+function exportBizCsv(){
+  const all=allTx(); const info=bizInfo(all); const byTx=new Set(info.filter(x=>x.t).map(x=>x.t.id));
+  const rows=[["Date","Ledger row","Type","Category","Notes","Ledger amount","Your share","Status","Bank date","Bank description","Bank amount","Account"]];
+  info.filter(x=>!x.E.income).sort((a,b)=>(a.date||"").localeCompare(b.date||"")).forEach(x=>rows.push([x.date||"",x.r.r,x.r.t,x.r.c,x.r.n,x.r.a,x.E.mine,x.t?"matched":x.skipped?"skipped":x.E.mine>0?"not found":"paid by others",x.t?x.t.post:"",x.t?x.t.desc:"",x.t?x.t.raw:"",x.t?x.t.acct:""]));
+  all.filter(t=>t.biz===true&&!byTx.has(t.id)).forEach(t=>rows.push([t.date,"","","","",0,-t.raw,"not in Ledger",t.post,t.desc,t.raw,t.acct]));
+  const cell=v=>{ let s=String(v??""); if(/^[=+\-@]/.test(s)&&isNaN(+s)) s="'"+s; return /[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s; };
+  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([rows.map(r=>r.map(cell).join(",")).join("\n")],{type:"text/csv"})); a.download="floofmart-costs.csv"; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },1000);
 }
 
 /* ---------- Goals ---------- */
@@ -921,16 +1080,28 @@ async function showLogin(msg){
     <span id="loginMsg" role="status" class="small muted">${esc(msg||"")}</span></div>`;
   let cfg; try{ cfg=await api("GET","/api/login-config"); }catch(e){ $("loginMsg").textContent="Couldn't reach the server."; return; }
   if(!cfg.clientId){ $("loginMsg").textContent="Google sign-in isn't set up yet."; return; }
-  if(!window.google||!google.accounts){
-    await new Promise((ok,bad)=>{ const sc=document.createElement("script"); sc.src="https://accounts.google.com/gsi/client"; sc.async=true; sc.onload=ok; sc.onerror=bad; document.head.appendChild(sc); }).catch(()=>{});
-  }
-  if(!window.google||!google.accounts){ $("loginMsg").textContent="Couldn't load Google sign-in. Check your connection or ad blocker."; return; }
+  try{ await loadGsi(); }catch(e){ $("loginMsg").textContent=e.message; return; }
   google.accounts.id.initialize({ client_id:cfg.clientId, ux_mode:"popup", callback:async(res)=>{
     $("loginMsg").textContent="Signing in…";
     try{ await api("POST","/api/login",{credential:res.credential}); box.innerHTML=""; $("tabbar").hidden=false; boot(); }
     catch(e){ $("loginMsg").textContent=e.message; }
   }});
   google.accounts.id.renderButton($("gBtn"),{theme:"outline",size:"large",shape:"pill",text:"signin_with"});
+}
+async function loadGsi(){
+  if(window.google&&google.accounts) return;
+  await new Promise((ok,bad)=>{ const sc=document.createElement("script"); sc.src="https://accounts.google.com/gsi/client"; sc.async=true; sc.onload=ok; sc.onerror=bad; document.head.appendChild(sc); }).catch(()=>{});
+  if(!window.google||!google.accounts) throw new Error("Couldn't load Google sign-in. Check your connection or ad blocker.");
+}
+// an access token for a Google API (asks once in a popup; the token stays in this page only)
+async function googleToken(scope){
+  const cfg=await api("GET","/api/login-config"); if(!cfg.clientId) throw new Error("Google sign-in isn't set up on this site yet.");
+  await loadGsi();
+  return new Promise((ok,bad)=>{
+    const tc=google.accounts.oauth2.initTokenClient({ client_id:cfg.clientId, scope, callback:r=>r&&r.access_token?ok(r.access_token):bad(new Error((r&&r.error_description)||"Google didn't give access to the Sheet.")),
+      error_callback:e=>bad(new Error(e&&e.type==="popup_closed"?"The Google window was closed before finishing.":(e&&e.message)||"Couldn't ask Google for access.")) });
+    tc.requestAccessToken({prompt:""});
+  });
 }
 async function signOut(){ try{ await api("POST","/api/logout",{}); }catch(e){} if(window.google&&google.accounts) google.accounts.id.disableAutoSelect(); location.reload(); }
 boot();
