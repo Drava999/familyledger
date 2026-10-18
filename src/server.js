@@ -1,6 +1,7 @@
 // Family Ledger: self-hosted on Cloudflare Workers + D1, behind Cloudflare Access.
 // Build: node build.mjs  (embeds the web page into dist/worker.js)
 const INDEX_HTML = "__INDEX_HTML__";
+const ASSETS = "__ASSETS__"; // manifest, icons, service worker (filled in by build.mjs)
 
 const CATS = ["Food & Dining","Groceries","Transport","Shopping","Bills & Utilities","Subscriptions","Health","Entertainment","Travel","Education","Insurance","Cash","Income","Transfers","Investing","People","Other"];
 const MAX_TX_BYTES = 1_900_000; // D1 row limit is 2 MB
@@ -11,6 +12,12 @@ export default {
     try {
       if (!url.pathname.startsWith("/api/")) {
         if (req.method !== "GET" && req.method !== "HEAD") return json({ error: "Not found" }, 404);
+        const a = typeof ASSETS === "object" && ASSETS[url.pathname];
+        if (a) {
+          const bytes = a.b64 ? b64urlToBytes(a.b64) : a.text;
+          const cc = url.pathname === "/sw.js" ? "no-cache" : "public, max-age=86400";
+          return new Response(bytes, { headers: { "content-type": a.type, "cache-control": cc, ...(url.pathname === "/sw.js" ? { "service-worker-allowed": "/" } : {}), ...SEC_HEADERS } });
+        }
         // The page itself is also behind Access, but serving it is harmless: all data comes from /api.
         return new Response(INDEX_HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache", ...SEC_HEADERS } });
       }

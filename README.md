@@ -18,6 +18,10 @@ Runs entirely on Cloudflare:
 
 Until step 2 is done, the site loads but the API refuses every request.
 
+## On your phone
+
+It installs like an app. Open the site in Chrome on Android and tap **Install** on the banner (or Chrome's menu › Add to Home screen). On iPhone: Safari › Share › Add to Home Screen. It then opens full screen with its own icon (`web/pwa/`: manifest, icons, a small service worker that keeps the page available offline; your data still needs the network). Each deploy gets a new build stamp so the old copy is replaced on the next open.
+
 ## Screens
 
 Four sections, same on phone (bottom tabs) and PC (left sidebar):
@@ -57,7 +61,7 @@ Money moves › Business matches FloofMart's own cost records to the family's ba
 - `web/head.html`, `web/body.html`: page markup and styles
 - `web/parse.js`: statement parsing, merchant names, categories (shared logic)
 - `web/app.js`: the page's behaviour
-- `build.mjs`: bundles the page into `dist/worker.js`
+- `build.mjs`: bundles the page and the app files (`web/pwa/`) into `dist/worker.js`
 - `schema.sql`: D1 tables
 - `test/`: local test server with in-memory D1 and mocked AI. `node test/unit.mjs` for logic and API; `node test/ui.mjs` clicks through every screen with made-up statements and a made-up FloofMart Ledger export (`test/make_fixtures.py`). Needs `npm i --no-save playwright xlsx@0.18.5` (set `EXE` to a Chromium headless shell if Playwright's own browser isn't installed).
 

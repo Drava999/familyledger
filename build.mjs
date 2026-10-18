@@ -23,5 +23,15 @@ fs.writeFileSync(here + "dist/index.html", html);
 
 const src = read("src/server.js");
 if (!src.includes('"__INDEX_HTML__"')) throw new Error("placeholder missing in src/server.js");
-fs.writeFileSync(here + "dist/worker.js", src.replace('"__INDEX_HTML__"', () => JSON.stringify(html)));
+// installable app files (manifest, icons, service worker); the build stamp makes an old cache expire on each deploy
+const stamp = Date.now().toString(36);
+const b64 = (p) => fs.readFileSync(here + p).toString("base64");
+const assets = {
+  "/manifest.webmanifest": { type: "application/manifest+json", text: read("web/pwa/manifest.webmanifest") },
+  "/sw.js": { type: "text/javascript", text: read("web/pwa/sw.js").replace("__BUILD__", stamp) },
+  "/icon.svg": { type: "image/svg+xml", text: read("web/pwa/icon.svg") },
+  "/icon-192.png": { type: "image/png", b64: b64("web/pwa/icon-192.png") },
+  "/icon-512.png": { type: "image/png", b64: b64("web/pwa/icon-512.png") },
+};
+fs.writeFileSync(here + "dist/worker.js", src.replace('"__INDEX_HTML__"', () => JSON.stringify(html)).replace('"__ASSETS__"', () => JSON.stringify(assets)));
 console.log("built dist/worker.js", fs.statSync(here + "dist/worker.js").size, "bytes");

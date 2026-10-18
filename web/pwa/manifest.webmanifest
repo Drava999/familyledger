@@ -1,0 +1,18 @@
+{
+  "name": "Family Ledger",
+  "short_name": "Ledger",
+  "description": "The family's money: statements, spending, bills, investing, goals and FloofMart costs.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#EEF2F1",
+  "theme_color": "#0E7C70",
+  "lang": "en-SG",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

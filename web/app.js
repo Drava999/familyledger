@@ -1052,9 +1052,20 @@ function exportCsv(){
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download="family-ledger.csv"; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },1000);
 }
 
+/* ---------- install as an app ---------- */
+let installEvt=null;
+if("serviceWorker" in navigator) window.addEventListener("load",()=>{ navigator.serviceWorker.register("/sw.js").catch(()=>{}); });
+window.addEventListener("beforeinstallprompt",e=>{ e.preventDefault(); installEvt=e; renderInstall(); });
+window.addEventListener("appinstalled",()=>{ installEvt=null; renderInstall(); toast("Family Ledger is on your home screen"); });
+function renderInstall(){
+  const box=$("installBox"); if(!box) return;
+  const standalone=matchMedia("(display-mode: standalone)").matches||navigator.standalone;
+  box.hidden=standalone||!installEvt;
+  if(!box.hidden) box.querySelector("button").onclick=async()=>{ const e=installEvt; installEvt=null; box.hidden=true; try{ await e.prompt(); }catch(_){} };
+}
 /* ---------- boot ---------- */
 async function boot(){
-  readHash(); render(); setSave("Loading…");
+  readHash(); render(); setSave("Loading…"); renderInstall();
   try{
     S.me=await api("GET","/api/me"); S.ai=!!S.me.ai;
     const changed=await loadData();
