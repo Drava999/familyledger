@@ -54,6 +54,9 @@ for(const [t,s] of shots){ await p.evaluate(([t,s])=>{ location.hash=t+(s?"/"+s:
 await p.evaluate(()=>{ location.hash="spend/sort"; }); await p.waitForTimeout(300);
 const sb=p.locator("text=Start sorting"); if(await sb.count()){ await sb.click(); await p.waitForTimeout(300); await p.screenshot({path:OUT+"/m-identify.png",fullPage:false}); await p.keyboard.press("Escape"); }
 ok((await p.locator("#monthSel option").allInnerTexts()).join()==="October,September,August,July,All time", "months come from the statements (no stray June)");
+await p.evaluate(()=>{ location.hash="spend/bills"; }); await p.waitForTimeout(300);
+const billsText=await p.locator("#view").innerText();
+ok(/Coming up[\s\S]*GOOGLE STORAGE/.test(billsText)&&/SPOTIFY/.test(billsText)&&!/Coming up[\s\S]*KENTUCKY|Coming up[\s\S]*BUS/.test(billsText.split("All repeat charges")[0]), "monthly bills: same-day subscriptions yes, random food and bus rides no");
 await p.evaluate(()=>{ location.hash="moves/accounts"; }); await p.waitForTimeout(300);
 ok(/transfers? matched between your accounts/.test(await p.locator("#view").innerText()), "transfers between the two accounts are paired");
 const d=await page(1280,900); await d.goto("http://localhost:8811/#home"); await d.waitForTimeout(900);

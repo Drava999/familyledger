@@ -295,12 +295,18 @@ function usualFor(m){
   return {total:tot/ms.length, cats, n:ms.length};
 }
 function lastDate(tx){ return tx.reduce((m,t)=>t.post>m?t.post:m,""); }
+const BILL_CATS=new Set(["Bills & Utilities","Subscriptions","Insurance","Education"]);
+function monthDiff(a,b){ const [y1,m1]=a.split("-").map(Number),[y2,m2]=b.split("-").map(Number); return (y2-y1)*12+(m2-m1); }
 function recurring(){
   const g={}; mine().filter(isSpend).forEach(t=>{ (g[t.key]=g[t.key]||[]).push(t); });
   return Object.entries(g).map(([k,a])=>{
     const ms=new Set(a.map(t=>t.date.slice(0,7))); const tot=a.reduce((s,t)=>s-t.amt,0); const avg=tot/a.length;
     const amts=a.map(t=>-t.amt); const spread=Math.max(...amts)-Math.min(...amts);
-    const monthly=ms.size>=2&&a.length<=ms.size+1&&spread<=Math.max(2,avg*.15);
+    // a bill lands on about the same day each month; a shop or food purchase only counts after three months in a row of that
+    const days=a.map(t=>+t.date.slice(8,10)); const dspread=Math.max(...days)-Math.min(...days); const sameDay=dspread<=5||dspread>=25;
+    const sorted=[...ms].sort(); const consecutive=sorted.every((x,i)=>!i||monthDiff(sorted[i-1],x)===1);
+    const billCat=BILL_CATS.has(a[0].cat); const enough=billCat?ms.size>=2:(ms.size>=3&&consecutive);
+    const monthly=enough&&sameDay&&a.length<=ms.size+1&&spread<=Math.max(2,avg*.15);
     const subs=a.some(t=>t.cat==="Subscriptions");
     const tag=monthly?"monthly":a.length>1?"usage":"once";
     const last=a.map(t=>t.date).sort().pop();
@@ -1057,8 +1063,10 @@ function fitViewport(){
   const vv=window.visualViewport, de=document.documentElement; if(!vv) return;
   const touch=matchMedia("(pointer:coarse)").matches; const s=vv.scale;
   if(touch&&s<0.85&&window.innerWidth>600&&!de.dataset.fit){ de.dataset.fit="1"; de.style.zoom=String(Math.round(1/s*100)/100); }
+  if(de.dataset.fit){ const z=parseFloat(de.style.zoom)||1; de.style.setProperty("--vh",Math.round(vv.height/z)+"px"); }
 }
 window.addEventListener("load",fitViewport); setTimeout(fitViewport,300);
+if(window.visualViewport) visualViewport.addEventListener("resize",fitViewport);
 /* ---------- install as an app ---------- */
 let installEvt=null;
 if("serviceWorker" in navigator) window.addEventListener("load",()=>{ navigator.serviceWorker.register("/sw.js").catch(()=>{}); });
