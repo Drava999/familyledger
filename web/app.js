@@ -1052,6 +1052,13 @@ function exportCsv(){
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download="family-ledger.csv"; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },1000);
 }
 
+/* ---------- phone shown a desktop-width page (Chrome "Desktop site", some installed shortcuts): scale it back up ---------- */
+function fitViewport(){
+  const vv=window.visualViewport, de=document.documentElement; if(!vv) return;
+  const touch=matchMedia("(pointer:coarse)").matches; const s=vv.scale;
+  if(touch&&s<0.85&&window.innerWidth>600&&!de.dataset.fit){ de.dataset.fit="1"; de.style.zoom=String(Math.round(1/s*100)/100); }
+}
+window.addEventListener("load",fitViewport); setTimeout(fitViewport,300);
 /* ---------- install as an app ---------- */
 let installEvt=null;
 if("serviceWorker" in navigator) window.addEventListener("load",()=>{ navigator.serviceWorker.register("/sw.js").catch(()=>{}); });
